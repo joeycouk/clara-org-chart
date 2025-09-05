@@ -1,0 +1,48 @@
+# Clojure
+.cpcache/
+.lein-*
+.nrepl-*
+target/
+classes/
+checkouts/
+pom.xml
+pom.xml.asc
+*.jar
+*.class
+
+# ClojureScript
+.shadow-cljs/
+node_modules/
+public/js/
+dist/
+out/
+resources/public/js/
+
+# Development
+.calva/
+.vscode/settings.json
+.rebel_readline_history
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Microsoft Office temporary files
+~$*
+
+# Test output
+output.html
+*.log
+
+# Local configuration
+config/local.edn
+profiles.clj
+
+# Clojure CLI tools
+.clj-kondo/
+.lsp/
+
+# Clara Rules cache
+.clara-eav/
+.clara-rules/
+usage-examples.js
