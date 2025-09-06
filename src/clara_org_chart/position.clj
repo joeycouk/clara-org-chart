@@ -13,11 +13,11 @@
             dotted-line-reports-to-position
             city
             comments-notes
-            ;; dotted-reports
-            ;; agencycode
-            ;; unitcode
-            ;; classcode
-            ;; serialnumber
+            dotted-reports
+            agencycode
+            unitcode
+            classcode
+            serialnumber
             unique-flag
             time-base
             tb-adjustment
@@ -50,11 +50,11 @@
        :dotted-line-reports-to-position (get row-map "Position Reports To Position (Dotted Line)")
        :city (get row-map "City")
        :comments-notes (get row-map "Comments/Notes")
-    ;;    :dotted-reports (get row-map "Dotted_Reports")
-    ;;    :agencycode (get row-map "AgencyCode")
-    ;;    :unitcode (get row-map "UnitCode")
-    ;;    :classcode (get row-map "ClassCode")
-    ;;    :serialnumber (get row-map "SerialNumber")
+       :dotted-reports (get row-map "Dotted_Reports")
+       :agencycode (get row-map "AgencyCode")
+       :unitcode (get row-map "UnitCode")
+       :classcode (get row-map "ClassCode")
+       :serialnumber (get row-map "SerialNumber")
        :unique-flag (get row-map "Unique_Flag")
        :time-base (get row-map "Time_Base")
        :tb-adjustment (get row-map "TB_Adjustment")
