@@ -12,10 +12,10 @@
      :clj
      (defn extract-data
        "Extract data from XLSX file - Clojure version using Apache POI"
-       [file-path]
+       [file-path & {:keys [minimal] :as opts}]
        (->
         (xlsx-jvm/create-file-buffer file-path)
-        (xlsx-jvm/extract-data))))
+        (xlsx-jvm/extract-data opts))))
   
   
   
