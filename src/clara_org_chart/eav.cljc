@@ -1,4 +1,4 @@
-(ns clara-xlsx-diff.eav
+(ns clara-org-chart.eav
   "EAV (Entity-Attribute-Value) transformation utilities for XLSX data"
   (:require [clara-eav.eav :as eav]))
 
@@ -55,20 +55,20 @@
 
 (comment
   ;; REPL experiments
-  (require '[clara-xlsx-diff.xlsx :as xlsx])
+  ;; (require '[clara-xlsx-diff.xlsx :as xlsx])
   
   ;; Transform sample data
-  (def sample-data (xlsx/extract-data "test/sample_data.xlsx"))
-  (def eav-triples (xlsx->eav sample-data :version :v1))
+  ;; (def sample-data (xlsx/extract-data "test/sample_data.xlsx"))
+  ;; (def eav-triples (xlsx->eav sample-data :version :v1))
 
-  (def eav-v2 (xlsx->eav (xlsx/extract-data "test/sample_data.xlsx") :version :v2))
+  ;; (def eav-v2 (xlsx->eav (xlsx/extract-data "test/sample_data.xlsx") :version :v2))
   ;; Inspect EAV structure
-  (take 10 eav-triples)
+  ;; (take 10 eav-triples)
   
   ;; Convert back to map for inspection
-  (def cell-map (eav->cell-map eav-triples))
-  (keys cell-map)
+  ;; (def cell-map (eav->cell-map eav-triples))
+  ;; (keys cell-map)
   
   ;; Group by sheet
-  (get-cells-by-sheet eav-triples)
+  ;; (get-cells-by-sheet eav-triples)
   )
