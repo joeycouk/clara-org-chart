@@ -2,44 +2,56 @@
   
   "XLSX file parsing and data extraction utilities"
    (:require [clojure.java.io :as io])
-   (:import [org.apache.poi.ss.usermodel WorkbookFactory Sheet Row Cell CellType CellStyle Font FillPatternType BorderStyle DataFormatter]
-            [org.apache.poi.ss.util CellReference]
-            [org.apache.poi.xssf.usermodel XSSFColor]
-            [java.io FileInputStream]))
+  (:import [org.apache.poi.ss.usermodel WorkbookFactory Sheet Row Cell CellType CellStyle Font FillPatternType BorderStyle DataFormatter]
+        [org.apache.poi.ss.util CellReference]
+        [org.apache.poi.ss.formula.function FunctionMetadataRegistry]
+        [org.apache.poi.xssf.usermodel XSSFColor]
+        [java.io FileInputStream]))
   
-  
-  
-
-
-
 
   (defn cell-value
     "Extract value from a POI Cell object, evaluating formulas. Returns nil if formula evaluation fails. Logs formula evaluation for debugging."
     [^Cell cell]
     (when cell
-      (let [cell-type (.getCellType cell)]
+      (let [cell-type (.getCellType cell)
+            cell-ref (try (.formatAsString (CellReference. (.getRowIndex cell) (.getColumnIndex cell))) (catch Exception _ "?"))]
         (cond
-          (= cell-type CellType/STRING) (.getStringCellValue cell)
-          (= cell-type CellType/NUMERIC) (.getNumericCellValue cell)
-          (= cell-type CellType/BOOLEAN) (.getBooleanCellValue cell)
+          (= cell-type CellType/STRING)
+          (let [v (.getStringCellValue cell)]
+            (println "Cell" cell-ref "type: STRING, value:" v)
+            v)
+          (= cell-type CellType/NUMERIC)
+          (let [v (.getNumericCellValue cell)]
+            (println "Cell" cell-ref "type: NUMERIC, value:" v)
+            v)
+          (= cell-type CellType/BOOLEAN)
+          (let [v (.getBooleanCellValue cell)]
+            (println "Cell" cell-ref "type: BOOLEAN, value:" v)
+            v)
           (= cell-type CellType/FORMULA)
           (try
             (let [workbook (.getWorkbook (.getSheet cell))
                   evaluator (.createFormulaEvaluator (.getCreationHelper workbook))
                   evaluated (.evaluate evaluator cell)
-                  result (case (.getCellType evaluated)
-                           CellType/STRING (.getStringValue evaluated)
-                           CellType/NUMERIC (.getNumberValue evaluated)
-                           CellType/BOOLEAN (.getBooleanValue evaluated)
-                           nil)]
-              (println "Formula cell:" (.getCellFormula cell) "Evaluated value:" result)
+                  cell-type-evaluated (.getCellType evaluated)
+                  result (cond
+                           (.equals cell-type-evaluated CellType/STRING) (.getStringValue evaluated)
+                           (.equals cell-type-evaluated CellType/NUMERIC) (.getNumberValue evaluated)
+                           (.equals cell-type-evaluated CellType/BOOLEAN) (.getBooleanValue evaluated)
+                           (.equals cell-type-evaluated CellType/ERROR) (.getErrorValue evaluated)
+                           (.equals cell-type-evaluated CellType/BLANK) nil
+                           :else nil)]
+              (println "Formula cell:" cell-ref "formula:" (.getCellFormula cell) "Evaluated value:" result)
               result)
             (catch Exception e
-              (println "Formula evaluation error for cell" (.getCellFormula cell) ":" (.getMessage e))
+              (println "Formula evaluation error for cell" cell-ref "formula:" (.getCellFormula cell) ":" (.getMessage e))
               nil))
-          (= cell-type CellType/BLANK) nil
-          (= cell-type CellType/_NONE) nil
-          :else nil))))
+          (= cell-type CellType/BLANK)
+          (do (println "Cell" cell-ref "type: BLANK") nil)
+          (= cell-type CellType/_NONE)
+          (do (println "Cell" cell-ref "type: _NONE") nil)
+          :else
+          (do (println "Cell" cell-ref "type: UNKNOWN" cell-type) nil)))))
   
   ;; (defn extract-font-info
   ;;   "Extract font information from a cell"
@@ -174,12 +186,15 @@
   
   
   (comment
-    ;; REPL experiments
-    (create-file-buffer "test/sample_data.xlsx")
-  
-    ;; Extract specific sheets only
-    (extract-data "test/resources/sample.xlsx" :sheets ["Sheet1" "Data"])
-  
-    ;; Inspect sheet structure
-    (let [data (extract-data "test/resources/sample.xlsx")]
-      (map :sheet-name (:sheets data))))
+    ;; --- Apache POI supported formula functions (POI 5.x) ---
+    ;; To get the list of supported formula functions in POI 5.x, run this in your REPL:
+    ;;
+    (require '[clojure.pprint :refer [pprint]])
+    (import 'org.apache.poi.ss.formula.function.FunctionMetadataRegistry)
+    ;; ;; Get function metadata by name
+    (FunctionMetadataRegistry/getFunctionByName "LEFT")
+    ;; ;; Get function index by name
+    (FunctionMetadataRegistry/lookupIndexByName "LEFT") ; returns -1 if not supported
+    ;;`
+    ;; If you get ClassNotFoundException, check your POI version and classpath.
+    )

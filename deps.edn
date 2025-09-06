@@ -9,8 +9,8 @@
         clyfe/clara-eav {:mvn/version "0.1.9"}
 
         ;; XLSX Processing
-        org.apache.poi/poi {:mvn/version "5.2.4"}
-        org.apache.poi/poi-ooxml {:mvn/version "5.2.4"}
+        org.apache.poi/poi {:mvn/version "5.4.1"}
+        org.apache.poi/poi-ooxml {:mvn/version "5.4.1"}
 
         ;; Utilities
         org.clojure/data.json {:mvn/version "2.4.0"}
