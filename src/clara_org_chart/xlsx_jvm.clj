@@ -2,7 +2,7 @@
   
   "XLSX file parsing and data extraction utilities"
    (:require [clojure.java.io :as io])
-  (:import [org.apache.poi.ss.usermodel WorkbookFactory Sheet Row Cell CellType]
+  (:import [org.apache.poi.ss.usermodel WorkbookFactory Sheet Cell CellType]
         [org.apache.poi.ss.util CellReference]
         [org.apache.poi.ss.formula.function FunctionMetadataRegistry]
         [java.io FileInputStream]))
@@ -91,84 +91,143 @@
   ;;        :locked (.getLocked cell-style)})))
   
 
+(defn- cell-extraction-xf
+  "Transducer for extracting cell data efficiently"
+  [evaluator]
+  (comp
+   (mapcat identity) ; flatten row -> cells
+   (map (fn [^Cell cell]
+          (let [cell-type (.getCellType cell)]
+            {:cell cell
+             :cell-type cell-type
+             :row (.getRowIndex cell)
+             :col (.getColumnIndex cell)})))
+   (map (fn [{:keys [^Cell cell cell-type row col]}]
+          (let [value (if (= cell-type CellType/FORMULA)
+                        ;; Use shared evaluator for formulas
+                        (try
+                          (let [evaluated (.evaluate evaluator cell)
+                                eval-type (.getCellType evaluated)]
+                            (cond
+                              (.equals eval-type CellType/STRING) (.getStringValue evaluated)
+                              (.equals eval-type CellType/NUMERIC) (.getNumberValue evaluated)
+                              (.equals eval-type CellType/BOOLEAN) (.getBooleanValue evaluated)
+                              (.equals eval-type CellType/ERROR) (.getErrorValue evaluated)
+                              (.equals eval-type CellType/BLANK) nil
+                              :else nil))
+                          (catch Exception _ nil))
+                        ;; Direct value extraction for non-formulas
+                        (cond
+                          (= cell-type CellType/STRING) (.getStringCellValue cell)
+                          (= cell-type CellType/NUMERIC) (.getNumericCellValue cell)
+                          (= cell-type CellType/BOOLEAN) (.getBooleanCellValue cell)
+                          (= cell-type CellType/BLANK) nil
+                          (= cell-type CellType/_NONE) nil
+                          :else nil))]
+            {:cell cell
+             :cell-type cell-type
+             :row row
+             :col col
+             :value value})))
+   (filter (fn [{:keys [value cell-type]}]
+             (or (some? value)
+                 (= cell-type CellType/FORMULA))))
+   (map (fn [{:keys [^Cell cell cell-type row col value]}]
+          {:cell-ref (.formatAsString (CellReference. row col))
+           :row row
+           :col col
+           :value value
+           :type (str cell-type)
+           :formula (when (= cell-type CellType/FORMULA)
+                      (.getCellFormula cell))}))))
+
+(defn- minimal-cell-extraction-xf
+  "Minimal transducer for maximum performance - only essential data"
+  []
+  (comp
+   (mapcat identity) ; flatten row -> cells
+   (keep (fn [^Cell cell]
+           (let [value (cell-value cell)]
+             (when (some? value)
+               {:cell-ref (.formatAsString (CellReference. (.getRowIndex cell) (.getColumnIndex cell)))
+                :row (.getRowIndex cell)
+                :col (.getColumnIndex cell)
+                :value value}))))))
+
 (defn- extract-sheet-data
-  "Extract all data from a single sheet. Optimized for performance."
+  "Extract all data from a single sheet using transducers for optimal performance."
   [^Sheet sheet]
   (let [sheet-name (.getSheetName sheet)
         workbook (.getWorkbook sheet)
-        evaluator (.createFormulaEvaluator (.getCreationHelper workbook))]
+        evaluator (.createFormulaEvaluator (.getCreationHelper workbook))
+        xf (cell-extraction-xf evaluator)]
     {:sheet-name sheet-name
-     :cells (doall
-             (for [^Row row sheet
-                   ^Cell cell row
-                   :let [cell-type (.getCellType cell)
-                         value (if (= cell-type CellType/FORMULA)
-                                 ;; Use shared evaluator for formulas
-                                 (try
-                                   (let [evaluated (.evaluate evaluator cell)
-                                         eval-type (.getCellType evaluated)]
-                                     (cond
-                                       (.equals eval-type CellType/STRING) (.getStringValue evaluated)
-                                       (.equals eval-type CellType/NUMERIC) (.getNumberValue evaluated)
-                                       (.equals eval-type CellType/BOOLEAN) (.getBooleanValue evaluated)
-                                       (.equals eval-type CellType/ERROR) (.getErrorValue evaluated)
-                                       (.equals eval-type CellType/BLANK) nil
-                                       :else nil))
-                                   (catch Exception _ nil))
-                                 ;; Direct value extraction for non-formulas
-                                 (cond
-                                   (= cell-type CellType/STRING) (.getStringCellValue cell)
-                                   (= cell-type CellType/NUMERIC) (.getNumericCellValue cell)
-                                   (= cell-type CellType/BOOLEAN) (.getBooleanCellValue cell)
-                                   (= cell-type CellType/BLANK) nil
-                                   (= cell-type CellType/_NONE) nil
-                                   :else nil))]
-                   :when (or (some? value)
-                             (= cell-type CellType/FORMULA))]
-               {:cell-ref (.formatAsString (CellReference. (.getRowIndex cell) (.getColumnIndex cell)))
-                :row (.getRowIndex cell)
-                :col (.getColumnIndex cell)
-                :value value
-                :type (str cell-type)
-                :formula (when (= cell-type CellType/FORMULA)
-                           (.getCellFormula cell))}))}))
+     :cells (into [] xf sheet)}))
 
 (defn- extract-sheet-data-minimal
-  "Extract minimal data from a single sheet for maximum performance."
+  "Extract minimal data from a single sheet using transducers for maximum performance."
   [^Sheet sheet]
-  (let [sheet-name (.getSheetName sheet)]
+  (let [sheet-name (.getSheetName sheet)
+        xf (minimal-cell-extraction-xf)]
     {:sheet-name sheet-name
-     :cells (doall
-             (for [^Row row sheet
-                   ^Cell cell row
-                   :let [value (cell-value cell)]
-                   :when (some? value)]
-               {:cell-ref (.formatAsString (CellReference. (.getRowIndex cell) (.getColumnIndex cell)))
-                :row (.getRowIndex cell)
-                :col (.getColumnIndex cell)
-                :value value}))}))
+     :cells (into [] xf sheet)}))
+
+(defn- batch-cell-extraction-xf
+  "Batch processing transducer for very large files - processes cells in chunks"
+  [batch-size]
+  (comp
+   (mapcat identity) ; flatten row -> cells
+   (partition-all batch-size) ; process in batches
+   (mapcat (fn [cell-batch]
+             (into [] 
+                   (comp
+                    (keep (fn [^Cell cell]
+                            (let [value (cell-value cell)]
+                              (when (some? value)
+                                {:cell-ref (.formatAsString (CellReference. (.getRowIndex cell) (.getColumnIndex cell)))
+                                 :row (.getRowIndex cell)
+                                 :col (.getColumnIndex cell)
+                                 :value value})))))
+                   cell-batch)))))
+
+(defn- extract-sheet-data-batch
+  "Extract data using batch processing for very large sheets"
+  [^Sheet sheet batch-size]
+  (let [sheet-name (.getSheetName sheet)
+        xf (batch-cell-extraction-xf batch-size)]
+    {:sheet-name sheet-name
+     :cells (into [] xf sheet)}))
 
 (defn extract-data
-  "Extract structured data from XLSX file.
+  "Extract structured data from XLSX file using transducers for optimal performance.
   
   Options:
   - :sheets - vector of sheet names to extract (default: all sheets)
   - :minimal - if true, extract only basic cell data for performance (default: false)
+  - :streaming - if true, use lazy evaluation for very large files (default: false)
+  - :batch-size - if provided, process cells in batches of this size (good for memory-constrained environments)
   
   Returns a map with sheet data and metadata"
-  [file-buffer & {:keys [sheets minimal] :or {minimal false}}]
+  [file-buffer & {:keys [sheets minimal streaming batch-size] :or {minimal false streaming false}}]
   (with-open [workbook (WorkbookFactory/create file-buffer)]
     (let [all-sheets (for [i (range (.getNumberOfSheets workbook))]
                        (.getSheetAt workbook i))
           target-sheets (if sheets
                           (filter #(contains? (set sheets) (.getSheetName %)) all-sheets)
                           all-sheets)
-          extraction-fn (if minimal extract-sheet-data-minimal extract-sheet-data)
-          sheet-data (mapv extraction-fn target-sheets)]
+          extraction-fn (cond
+                          batch-size #(extract-sheet-data-batch % batch-size)
+                          minimal extract-sheet-data-minimal
+                          :else extract-sheet-data)
+          sheet-data (if streaming
+                       (map extraction-fn target-sheets) ; lazy evaluation
+                       (mapv extraction-fn target-sheets))] ; eager evaluation
       {:file-path "buffer-data"
-       :sheets sheet-data
-       :sheet-count (count sheet-data)
-       :total-cells (reduce + (map #(count (:cells %)) sheet-data))})))
+       :sheets (if streaming sheet-data (vec sheet-data))
+       :sheet-count (count target-sheets)
+       :total-cells (if streaming
+                      :lazy-evaluation
+                      (reduce + (map #(count (:cells %)) sheet-data)))})))
   
   
   (defn create-file-buffer
