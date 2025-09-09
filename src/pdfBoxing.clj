@@ -1,7 +1,8 @@
 (ns pdfBoxing
   (:import [org.apache.pdfbox.pdmodel PDDocument]
            [org.apache.pdfbox.text PDFTextStripper])
-  (:require [clojure.java.io :as io]))
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]))
 
 ;; Regex for position codes of form ###-###-####-### (3-3-4-3 digits with hyphens)
 (def ^:private position-code-regex #"\b\d{3}-\d{3}-\d{4}-\d{3}\b")
@@ -19,21 +20,6 @@
          (.getText stripper doc))
        (range 1 (inc (.getNumberOfPages doc)))))))
 
-
-(defn- extract-pages
-  "Return a vector of page texts from a PDF path using pdfboxing.
-  IMPORTANT: Preserve blank pages so that page indices match the original PDF.
-  pdfboxing.text/extract returns one big string separated by form-feed (\f).
-  We split with limit -1 to retain trailing empty segment if present."
-  [pdf-path]
-  (let [raw (pdf/extract pdf-path)]
-    (cond
-      (nil? raw) []
-      (string? raw) (->> (str/split raw #"\f" -1)
-                         ;; do not drop blanks; just trim CR characters
-                         (map #(str/replace % #"\r" ""))
-                         vec)
-      :else (vec raw))))
 
 ;; Debug helpers ------------------------------------------------------------
 
@@ -126,8 +112,11 @@
                   {})
           (update-vals (fn [pgs] (->> pgs (sort) vec)))))))
 
-;; Example usage:
+
+(comment
+  ;; Example usage:
 (count ((comp vec extract-pages-pdfbox) "resources/Southern Region Org Charts 01.01.25.pdf"))
 (positions-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3)
 ;; (find-positions-in-pdf "Southern Region Org Charts 01.01.25.pdf")
 ;; (find-positions-in-pdf "Southern Region Org Charts 01.01.25.pdf" ["542-434-1083-901" "541-314-1402-601"]) 
+  :rcf)

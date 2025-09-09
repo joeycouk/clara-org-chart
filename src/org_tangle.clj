@@ -9,7 +9,13 @@
 
 
 
-
+(defn filter-positions-by-codes
+  "Return all positions where :position or :reports-to-position matches any code in codes."
+  [positions codes]
+  (let [code-set (set codes)]
+    (filter #(or (contains? code-set (:position %))
+                 (contains? code-set (:reports-to-position %)))
+            positions)))
 
 (defn position->node-id
   "Convert a position string to a valid node ID"
@@ -54,7 +60,7 @@
         ;; Determine node styling based on position type
         node-attrs (cond
                      (= employee-name "VACANT") 
-                     {:fillcolor "lightgray" :style "filled,dashed" :fontcolor "gray" :shape "box"}
+                     {:fillcolor "lightgray" :style "filled,dashed" :fontcolor "red" :shape "box"}
                      
                      (str/includes? (str/upper-case (or title "")) "DIRECTOR")
                      {:fillcolor "lightblue" :style "filled" :shape "box" :fontweight "bold"}
@@ -155,10 +161,10 @@
   "Create dotted line edges representing matrix/dotted line relationships"
   [positions]
   (for [position positions
-        :let [subordinate-id (position->node-id (:position position))
+        :let [position-id (position->node-id (:position position))
               dotted-manager-id (position->node-id (:dotted-line-reports-to-position position))]
-        :when (and subordinate-id dotted-manager-id)]
-    [dotted-manager-id subordinate-id {:style "dashed" :color "gray" :label "dotted"}]))
+        :when (and position-id dotted-manager-id)]
+    [position-id dotted-manager-id {:style "dashed" :color "gray"}]))
 
 ;; Data filtering and optimization functions for large org charts
 (defn filter-positions-by-level
@@ -247,7 +253,7 @@
         missing-supervisor-ids (set/difference referenced-supervisors existing-positions)
         ;; Filter for what look like valid position IDs (start with digits and contain hyphens)
         valid-looking-ids (filter #(and (string? %)
-                                        (not (empty? %))
+                                        (seq %)
                                         (re-matches #"^\d{3}-.*" %)) missing-supervisor-ids)
         invalid-ids (set/difference missing-supervisor-ids (set valid-looking-ids))]
     {:total-positions (count positions)
@@ -514,6 +520,7 @@
       "svg" (copy (dot->svg dot) (file filename))
       "png" (copy (dot->image dot "png") (file filename))
       "jpg" (copy (dot->image dot "jpg") (file filename))
+      "dot" (spit filename dot)  ; <-- This line was added
       (throw (IllegalArgumentException. (str "Unsupported format: " format))))))
 
 (defn save-hierarchical-charts
@@ -531,6 +538,17 @@
           (println (str "Chart for " group ": " (count positions) "/" total-count " positions -> " safe-filename)))))
     (println (str "Generated " (count subsets) " departmental org charts"))))
 
+(defn save-org-chart-for-codes
+  "Save an org chart for only the positions matching the given codes (by :position or :reports-to-position)."
+  [positions codes output-file & {:keys [format show-details show-codes include-dotted-lines rankdir]
+                                  :or {format "png" show-details true show-codes false include-dotted-lines true rankdir "TB"}}]
+  (let [filtered (filter-positions-by-codes positions codes)]
+    (save-org-chart filtered output-file
+                    :format format
+                    :show-details show-details
+                    :show-codes show-codes
+                    :include-dotted-lines include-dotted-lines
+                    :rankdir rankdir)))
 
 (defn save-executive-summary-chart
   "Save a high-level executive summary chart with only top positions"
