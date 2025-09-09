@@ -7,6 +7,10 @@
             [clara-org-chart.position :as pos]
             [clara-org-chart.xlsx :as xlsx]))
 
+
+
+
+
 (defn position->node-id
   "Convert a position string to a valid node ID"
   [position]
@@ -596,6 +600,34 @@
      :departments (count departments)
      :department-list departments
      :title-distribution titles}))
+
+
+
+
+(defn save-complete-org-chart
+  "Generate and save a complete org chart image for all positions using tangle.core."
+  [positions output-file & {:keys [format show-details show-codes include-dotted-lines rankdir]
+                            :or {format "png" show-details true show-codes false include-dotted-lines true rankdir "TB"}}]
+  (let [{:keys [nodes edges]} (positions->org-chart positions
+                                                    :show-details show-details
+                                                    :show-codes show-codes
+                                                    :include-dotted-lines include-dotted-lines)
+        dot (graph->dot nodes edges
+                        {:directed? true
+                         :graph {:rankdir rankdir :dpi 150 :splines "ortho" :concentrate true}
+                         :node {:fontname "Arial" :fontsize 11 :margin 0.2 :width 2.5 :height 1.0}
+                         :edge {:fontname "Arial" :fontsize 9 :arrowsize 0.8}
+                         :node->id :id
+                         :node->descriptor (fn [node] (dissoc node :id))})]
+    (case format
+      "png" (copy (dot->image dot "png") (file output-file))
+      "svg" (copy (dot->svg dot) (file output-file))
+      "dot" (spit output-file dot)
+      (throw (IllegalArgumentException. (str "Unsupported format: " format))))
+    (println (str "Complete org chart saved to: " output-file))))
+
+
+
 
 (comment
   ;; Example usage:

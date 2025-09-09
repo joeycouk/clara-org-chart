@@ -17,6 +17,7 @@
         ;;  hiccup/hiccup {:mvn/version "1.0.5"}
         ;;  djblue/portal {:mvn/version "0.59.1"}
          macroz/tangle {:mvn/version "0.2.0"}
+        pdfboxing/pdfboxing {:mvn/version "0.1.14"}
         }
 
  :aliases {:dev {:extra-paths ["dev" "test" "src"]
