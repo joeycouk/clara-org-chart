@@ -17,14 +17,24 @@
                  (contains? code-set (:reports-to-position %)))
             positions)))
 
+(defn filter-positions-by-exact-codes
+  "Return only positions where :position exactly matches one of the codes (no automatic inclusion of reports)."
+  [positions codes]
+  (let [code-set (set codes)]
+    (filter #(contains? code-set (:position %))
+            positions)))
+
 (defn position->node-id
   "Convert a position string to a valid node ID"
   [position]
   (when position
-    (-> position
-        (str/replace #"[^a-zA-Z0-9_-]" "_")
-        (str/replace #"_{2,}" "_")
-        (str/trim))))
+    (let [position-str (str position)  ; Convert to string first
+          cleaned (-> position-str
+                      (str/replace #"[^a-zA-Z0-9_-]" "_")
+                      (str/replace #"_{2,}" "_")
+                      (str/trim))]
+      (when (not (str/blank? cleaned))
+        cleaned))))
 
 (defn format-employee-name
   "Format employee name for display"
@@ -35,50 +45,76 @@
 
 (defn create-position-node
   "Create a node representation for a position"
-  [position & {:keys [show-details show-codes] :or {show-details true show-codes false}}]
+  [position & {:keys [show-codes] :or {show-codes false}}]
   (let [node-id (position->node-id (:position position))
         employee-name (format-employee-name (:current-employee position))
         title (:title position)
         position-code (:position position)
-        city (:city position)
         
         ;; Create improved label with employee, position, and title
         label-parts (cond-> []
                       ;; Always include employee name
                       true (conj employee-name)
                       ;; Always include position code  
-                      position-code (conj (str "Position: " position-code))
+                      position-code (conj (str position-code))
                       ;; Always include title
                       title (conj title)
                       ;; Optionally include additional details
-                      (and show-details city (not (str/blank? city))) (conj (str "Location: " city))
                       (and show-codes (:agencycode position)) (conj (str "Agency: " (:agencycode position)))
                       (and show-codes (:unitcode position)) (conj (str "Unit: " (:unitcode position))))
         
         label (str/join "\\n" label-parts)
         
-        ;; Determine node styling based on position type
-        node-attrs (cond
+        ;; Check management status for styling
+        has-subordinates-in-org (and (:direct-subordinates position) (> (:direct-subordinates position) 0))
+        is-ra-position (= (:time-base position) "RA")
+        
+        ;; Determine node styling based on position type and management status
+        base-attrs (cond
                      (= employee-name "VACANT") 
-                     {:fillcolor "lightgray" :style "filled,dashed" :fontcolor "red" :shape "box"}
+                     {:fillcolor "lightgray" :fontcolor "red"}
                      
                      (str/includes? (str/upper-case (or title "")) "DIRECTOR")
-                     {:fillcolor "lightblue" :style "filled" :shape "box" :fontweight "bold"}
+                     {:fillcolor "lightblue" :fontweight "bold"}
                      
                      (str/includes? (str/upper-case (or title "")) "CHIEF")
-                     {:fillcolor "lightgreen" :style "filled" :shape "box" :fontweight "bold"}
+                     {:fillcolor "lightgreen" :fontweight "bold"}
                      
                      (str/includes? (str/upper-case (or title "")) "DEPUTY")
-                     {:fillcolor "lightyellow" :style "filled" :shape "box"}
+                     {:fillcolor "lightyellow"}
                      
                      (str/includes? (str/upper-case (or title "")) "ASSISTANT")
-                     {:fillcolor "lightcyan" :style "filled" :shape "box"}
+                     {:fillcolor "lightcyan"}
                      
                      (str/includes? (str/upper-case (or title "")) "CAPTAIN")
-                     {:fillcolor "wheat" :style "filled" :shape "box"}
+                     {:fillcolor "wheat"}
                      
                      :else
-                     {:fillcolor "white" :style "filled" :shape "box"})]
+                     {:fillcolor "white"})
+        
+        ;; Determine shape and style based on management status and time-base
+        shape-attrs (cond
+                      ;; Special handling for vacant positions
+                      (= employee-name "VACANT")
+                      {:shape "box" :style "filled,dashed"}
+                      
+                      ;; Special styling for RA positions (double dotted squares - inner and outer)
+                      (and is-ra-position has-subordinates-in-org)
+                      {:shape "box" :style "filled,dotted" :penwidth 2 :peripheries 2}
+                      
+                      (and is-ra-position (not has-subordinates-in-org))
+                      {:shape "box" :style "filled,rounded,dotted" :penwidth 2 :peripheries 2}
+                      
+                      ;; Regular styling for non-RA positions
+                      ;; Square boxes for people with direct-subordinates > 0 
+                      has-subordinates-in-org
+                      {:shape "box" :style "filled"}
+                      
+                      ;; Rounded squares for people with no organizational subordinates
+                      :else
+                      {:shape "box" :style "filled,rounded"})
+        
+        node-attrs (merge base-attrs shape-attrs)]
     
     (merge {:id node-id
             :label label}
@@ -153,7 +189,9 @@
   (for [position positions
         :let [subordinate-id (position->node-id (:position position))
               supervisor-id (position->node-id (:reports-to-position position))]
-        :when (and subordinate-id supervisor-id)]
+        :when (and subordinate-id supervisor-id 
+                   (not (str/blank? subordinate-id))
+                   (not (str/blank? supervisor-id)))]
     ;; Note: This creates edges FROM supervisor TO subordinate (downward flow)
     [supervisor-id subordinate-id {:color "black" :arrowhead "normal"}]))
 
@@ -163,8 +201,99 @@
   (for [position positions
         :let [position-id (position->node-id (:position position))
               dotted-manager-id (position->node-id (:dotted-line-reports-to-position position))]
-        :when (and position-id dotted-manager-id)]
+        :when (and position-id dotted-manager-id 
+                   (not (str/blank? position-id))
+                   (not (str/blank? dotted-manager-id)))]
     [position-id dotted-manager-id {:style "dashed" :color "gray"}]))
+
+(defn create-referenced-supervisor-nodes
+  "Create nodes for supervisors that are referenced but not in the main position list"
+  [positions]
+  (let [existing-position-ids (set (map :position positions))
+        referenced-supervisor-ids (set (filter some? (map :reports-to-position positions)))
+        missing-supervisor-ids (clojure.set/difference referenced-supervisor-ids existing-position-ids)]
+    (for [supervisor-id missing-supervisor-ids
+          :when (not (str/blank? supervisor-id))]
+      {:id (position->node-id supervisor-id)
+       :label (str supervisor-id "\n(Referenced)")
+       :fillcolor "yellow"
+       :fontcolor "black"
+       :style "filled"
+       :shape "box"
+       :penwidth 2})))
+
+;; Error visualization functions
+(defn create-error-node
+  "Create a node representation for an org chart error"
+  [error]
+  (let [error-id (str "error_" (hash error))
+        missing-pos (:missing-position-code error)
+        extra-pos (:extra-position-code error)
+        page (:page error)
+        description (:description error)
+        
+        ;; Create error label with more prominent styling
+        label-parts (cond-> []
+                      missing-pos (conj (str "Missing: " missing-pos))
+                      extra-pos (conj (str "Extra: " extra-pos))
+                      description (conj description)
+                      page (conj (str "Page: " page)))
+        
+        label (str/join "\\n" label-parts)]
+    
+    {:id error-id
+     :label label
+     :fillcolor "red"
+     :fontcolor "white" 
+     :style "filled"
+     :shape "box"
+     :penwidth 2
+     :fontsize 10}))
+
+(defn create-error-anchor
+  "Create an invisible anchor node to position errors at the bottom"
+  [errors]
+  (when (seq errors)
+    [{:id "error_anchor_top"
+      :label ""
+      :shape "point"
+      :style "invis"
+      :width 0
+      :height 0}
+     {:id "error_anchor_bottom"
+      :label ""
+      :shape "point"
+      :style "invis"
+      :width 0
+      :height 0}]))  ; Create two anchors for better control
+
+(defn create-error-edges
+  "Create edges for errors: invisible ranking edges and visible relation edges"
+  [errors positions root-positions]
+  (let [position-id-map (into {} (map (juxt :position #(position->node-id (:position %))) positions))
+        
+        ;; Create invisible ranking edges to force errors to bottom
+        ranking-edges (when (seq errors)
+                        (let [;; Connect all root positions to top anchor
+                              root-to-top (for [root root-positions
+                                               :let [root-id (position->node-id (:position root))]]
+                                           [root-id "error_anchor_top" {:style "invis" :constraint "true" :weight 100}])
+                              ;; Connect top anchor to bottom anchor  
+                              anchor-chain [["error_anchor_top" "error_anchor_bottom" {:style "invis" :constraint "true" :weight 100}]]
+                              ;; Connect bottom anchor to all errors
+                              bottom-to-errors (for [error errors
+                                                    :let [error-id (str "error_" (hash error))]]
+                                                ["error_anchor_bottom" error-id {:style "invis" :constraint "true" :weight 100}])]
+                          (concat root-to-top anchor-chain bottom-to-errors)))
+        
+        ;; Visible edges from errors to related positions (only for extra positions that exist)
+        relation-edges (for [error errors
+                            :let [error-id (str "error_" (hash error))
+                                  extra-pos (:extra-position-code error)]
+                            :when (and extra-pos (get position-id-map extra-pos))
+                            :let [target-id (get position-id-map extra-pos)]]
+                        [error-id target-id {:color "red" :style "dashed" :arrowhead "diamond" :constraint "false" :weight 1}])]
+    (concat ranking-edges relation-edges)))
 
 ;; Data filtering and optimization functions for large org charts
 (defn filter-positions-by-level
@@ -303,39 +432,56 @@
 
 (defn positions->org-chart
   "Convert a collection of Position records to org chart nodes and edges"
-  [positions & {:keys [show-details show-codes include-dotted-lines] 
-                :or {show-details true show-codes false include-dotted-lines true}}]
-  (let [;; Ensure we have all referenced positions
-        complete-positions (ensure-complete-hierarchy positions)
+  [positions & {:keys [show-codes include-dotted-lines strict-filter errors] 
+                :or {show-codes false include-dotted-lines true strict-filter false errors []}}]
+  (let [;; Optionally ensure we have all referenced positions
+        complete-positions (if strict-filter 
+                             positions  ; Use only the provided positions
+                             (ensure-complete-hierarchy positions))
         ;; Sort positions hierarchically with roots first
         sorted-positions (sort-positions-hierarchically complete-positions)
-        nodes (map #(create-position-node % :show-details show-details :show-codes show-codes) sorted-positions)
+        position-nodes (map #(create-position-node % :show-codes show-codes) sorted-positions)
+        ;; When using strict filter, create nodes for referenced supervisors
+        referenced-supervisor-nodes (if strict-filter 
+                                       (create-referenced-supervisor-nodes positions)
+                                       [])
+        error-nodes (map create-error-node errors)
+        error-anchors (create-error-anchor errors)
+        all-nodes (concat position-nodes referenced-supervisor-nodes error-nodes (or error-anchors []))
         solid-edges (create-reporting-edges sorted-positions)
         dotted-edges (if include-dotted-lines (create-dotted-line-edges sorted-positions) [])
-        all-edges (concat solid-edges dotted-edges)]
-    {:nodes nodes
+        root-positions (find-root-positions sorted-positions)
+        error-edges (create-error-edges errors sorted-positions root-positions)
+        all-edges (concat solid-edges dotted-edges error-edges)]
+    {:nodes all-nodes
      :edges all-edges
-     :root-positions (find-root-positions sorted-positions)}))
+     :root-positions root-positions}))
 
 (defn generate-large-org-chart-dot
   "Generate DOT notation optimized for large org charts (500+ positions)"
-  [positions & {:keys [show-details show-codes include-dotted-lines rankdir]
-                :or {show-details true show-codes false include-dotted-lines false rankdir "TB"}}]
+  [positions & {:keys [show-codes include-dotted-lines rankdir strict-filter errors title]
+                :or {show-codes false include-dotted-lines false rankdir "TB" strict-filter false errors [] title nil}}]
   (let [{:keys [nodes edges]} (positions->org-chart positions 
-                                                                :show-details show-details
                                                                 :show-codes show-codes
-                                                                :include-dotted-lines include-dotted-lines)]
+                                                                :include-dotted-lines include-dotted-lines
+                                                                :strict-filter strict-filter
+                                                                :errors errors)
+        graph-config (cond-> {:rankdir rankdir          ; Top-down or left-right layout
+                              :dpi 150                  ; Fixed resolution
+                              :splines "ortho"          ; Orthogonal edges
+                              :nodesep 1.0              ; FIXED spacing between nodes
+                              :ranksep 1.5              ; FIXED spacing between levels
+                              :concentrate true         ; Reduce edge crossings
+                              :newrank true             ; Better ranking algorithm
+                              :overlap false            ; Prevent node overlap
+                              :packmode "node"}         ; Pack by nodes, not area
+                       title (assoc :label title
+                                   :labelloc "t"        ; Position label at top
+                                   :fontsize 16         ; Larger font for title
+                                   :fontname "Arial Bold"))] ; Bold title font
     (graph->dot nodes edges 
                 {:directed? true
-                 :graph {:rankdir rankdir          ; Top-down or left-right layout
-                         :dpi 150                  ; Fixed resolution
-                         :splines "ortho"          ; Orthogonal edges
-                         :nodesep 1.0              ; FIXED spacing between nodes
-                         :ranksep 1.5              ; FIXED spacing between levels
-                         :concentrate true         ; Reduce edge crossings
-                         :newrank true             ; Better ranking algorithm
-                         :overlap false            ; Prevent node overlap
-                         :packmode "node"}         ; Pack by nodes, not area
+                 :graph graph-config
                  :node {:fontname "Arial Bold"     ; Bold font for readability
                         :fontsize 12               ; FIXED font size
                         :margin 0.2                ; FIXED margin
@@ -352,22 +498,28 @@
 
 (defn generate-org-chart-dot
   "Generate DOT notation for an org chart with proper hierarchical layout"
-  [positions & {:keys [show-details show-codes include-dotted-lines rankdir]
-                :or {show-details true show-codes false include-dotted-lines true rankdir "TB"}}]
+  [positions & {:keys [show-codes include-dotted-lines rankdir strict-filter errors title]
+                :or {show-codes false include-dotted-lines true rankdir "TB" strict-filter false errors [] title nil}}]
   (let [{:keys [nodes edges]} (positions->org-chart positions 
-                                                                :show-details show-details
                                                                 :show-codes show-codes
-                                                                :include-dotted-lines include-dotted-lines)]
+                                                                :include-dotted-lines include-dotted-lines
+                                                                :strict-filter strict-filter
+                                                                :errors errors)
+        graph-config (cond-> {:rankdir rankdir          ; Top-down layout
+                              :dpi 150                  ; High resolution
+                              :splines "ortho"          ; Orthogonal edges
+                              :nodesep 0.8              ; Space between nodes at same level
+                              :ranksep 1.2              ; Space between hierarchy levels
+                              :concentrate true         ; Reduce edge crossings
+                              :newrank true             ; Better ranking algorithm
+                              :compound true}           ; Allow compound layouts
+                       title (assoc :label title
+                                   :labelloc "t"        ; Position label at top
+                                   :fontsize 16         ; Larger font for title
+                                   :fontname "Arial Bold"))] ; Bold title font
     (graph->dot nodes edges 
                 {:directed? true
-                 :graph {:rankdir rankdir          ; Top-down layout
-                         :dpi 150                  ; High resolution
-                         :splines "ortho"          ; Orthogonal edges
-                         :nodesep 0.8              ; Space between nodes at same level
-                         :ranksep 1.2              ; Space between hierarchy levels
-                         :concentrate true         ; Reduce edge crossings
-                         :newrank true             ; Better ranking algorithm
-                         :compound true}           ; Allow compound layouts
+                 :graph graph-config
                  :node {:fontname "Arial"
                         :fontsize 11
                         :margin 0.2
@@ -484,12 +636,10 @@
         ;; Use large chart format for 200+ positions, regular for smaller charts
         dot-content (if (>= (count final-positions) 200)
                       (generate-large-org-chart-dot final-positions
-                                                    :show-details false  ; Reduce detail for clarity
                                                     :show-codes false
                                                     :include-dotted-lines include-dotted-lines
                                                     :rankdir "TB")
                       (generate-org-chart-dot final-positions
-                                              :show-details false  ; Reduce detail for clarity
                                               :show-codes false
                                               :include-dotted-lines include-dotted-lines
                                               :rankdir "TB"))]
@@ -508,14 +658,16 @@
 
 (defn save-org-chart
   "Save an org chart as an image file"
-  [positions filename & {:keys [format show-details show-codes include-dotted-lines rankdir]
-                         :or {format "png" show-details true show-codes false
-                              include-dotted-lines true rankdir "TB"}}]
+  [positions filename & {:keys [format show-codes include-dotted-lines rankdir strict-filter errors title]
+                         :or {format "png" show-codes false
+                              include-dotted-lines true rankdir "TB" strict-filter false errors [] title nil}}]
   (let [dot (generate-org-chart-dot positions
-                                    :show-details show-details
                                     :show-codes show-codes
                                     :include-dotted-lines include-dotted-lines
-                                    :rankdir rankdir)]
+                                    :rankdir rankdir
+                                    :strict-filter strict-filter
+                                    :errors errors
+                                    :title title)]
     (case format
       "svg" (copy (dot->svg dot) (file filename))
       "png" (copy (dot->image dot "png") (file filename))
@@ -534,21 +686,25 @@
       (when (> (count positions) 1) ; Only create charts with multiple positions
         (let [filename (str output-prefix "_" (name group) "." (name format))
               safe-filename (str/replace filename #"[^a-zA-Z0-9._-]" "_")]
-          (save-org-chart positions safe-filename :format format :show-details false)
+          (save-org-chart positions safe-filename :format format)
           (println (str "Chart for " group ": " (count positions) "/" total-count " positions -> " safe-filename)))))
     (println (str "Generated " (count subsets) " departmental org charts"))))
 
 (defn save-org-chart-for-codes
   "Save an org chart for only the positions matching the given codes (by :position or :reports-to-position)."
-  [positions codes output-file & {:keys [format show-details show-codes include-dotted-lines rankdir]
-                                  :or {format "png" show-details true show-codes false include-dotted-lines true rankdir "TB"}}]
-  (let [filtered (filter-positions-by-codes positions codes)]
+  [positions codes output-file & {:keys [format show-codes include-dotted-lines rankdir strict-filter errors title]
+                                  :or {format "png" show-codes false include-dotted-lines true rankdir "TB" strict-filter false errors [] title nil}}]
+  (let [filtered (if strict-filter 
+                   (filter-positions-by-exact-codes positions codes)
+                   (filter-positions-by-codes positions codes))]
     (save-org-chart filtered output-file
                     :format format
-                    :show-details show-details
                     :show-codes show-codes
                     :include-dotted-lines include-dotted-lines
-                    :rankdir rankdir)))
+                    :rankdir rankdir
+                    :strict-filter strict-filter
+                    :errors errors
+                    :title title)))
 
 (defn save-executive-summary-chart
   "Save a high-level executive summary chart with only top positions"
@@ -559,7 +715,6 @@
                                                        :exclude-vacant true)]
     (save-org-chart executive-positions filename 
                     :format format 
-                    :show-details true 
                     :show-codes false
                     :include-dotted-lines false)
     (println (str "Executive summary chart (" (count executive-positions) " positions) saved to: " filename))))
@@ -568,19 +723,18 @@
 
 (defn create-department-subgraph
   "Create a subgraph for a specific department/agency"
-  [positions agency-code & {:keys [show-details show-codes] 
-                            :or {show-details true show-codes false}}]
+  [positions agency-code & {:keys [show-codes] 
+                            :or {show-codes false}}]
   (let [dept-positions (filter #(= (:agencycode %) agency-code) positions)]
     (positions->org-chart dept-positions 
-                          :show-details show-details
                           :show-codes show-codes
                           :include-dotted-lines false)))
 
 (defn generate-multi-department-chart
   "Generate an org chart with departments as subgraphs"
-  [positions & {:keys [show-details show-codes rankdir]
-                :or {show-details true show-codes false rankdir "TB"}}]
-  (let [all-nodes (map #(create-position-node % :show-details show-details :show-codes show-codes) positions)
+  [positions & {:keys [show-codes rankdir]
+                :or {show-codes false rankdir "TB"}}]
+  (let [all-nodes (map #(create-position-node % :show-codes show-codes) positions)
         all-edges (create-reporting-edges positions)]
     
     (graph->dot all-nodes all-edges
@@ -624,10 +778,9 @@
 
 (defn save-complete-org-chart
   "Generate and save a complete org chart image for all positions using tangle.core."
-  [positions output-file & {:keys [format show-details show-codes include-dotted-lines rankdir]
-                            :or {format "png" show-details true show-codes false include-dotted-lines true rankdir "TB"}}]
+  [positions output-file & {:keys [format show-codes include-dotted-lines rankdir]
+                            :or {format "png" show-codes false include-dotted-lines true rankdir "TB"}}]
   (let [{:keys [nodes edges]} (positions->org-chart positions
-                                                    :show-details show-details
                                                     :show-codes show-codes
                                                     :include-dotted-lines include-dotted-lines)
         dot (graph->dot nodes edges
@@ -659,7 +812,6 @@
   ;; Save with more details
   (save-org-chart positions "detailed-org-chart.svg" 
                   :format "svg" 
-                  :show-details true 
                   :show-codes true)
   
   ;; Create a horizontal layout

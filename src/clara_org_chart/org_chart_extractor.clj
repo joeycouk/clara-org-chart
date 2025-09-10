@@ -12,7 +12,9 @@
    position-count      ; Number of positions found (integer)
    positions           ; Vector of position code strings
    status              ; :success or :error (keyword)
-   error])             ; Error message if status is :error (optional string)
+   error               ; Error message if status is :error (optional string)
+   file-path           ; Path to the PDF file (string)
+   file-name])         ; Display name of the file (string)
 
 (defrecord OrgChartFileSummary
   [total-pages         ; Total number of pages processed (integer)
@@ -63,21 +65,30 @@
     (:position-count page-map)
     (:positions page-map)
     (:status page-map)
-    (:error page-map)))
+    (:error page-map)
+    (:file-path page-map)
+    (:file-name page-map)))
 
 (defn load-org-chart-pages-as-records
   "Load org chart pages from extracted positions file and convert to OrgChartPageResult records.
   This is the main function to use when you need OrgChartPageResult records for Clara Rules."
   [extraction-file-path]
-  (->> (load-extracted-positions extraction-file-path)
-       :extractions
-       (mapcat :org-charts)
-       (map page-map->record)
-       vec))
+  (let [data (load-extracted-positions extraction-file-path)]
+    (->> (:extractions data)
+         (mapcat (fn [file-extraction]
+                   (let [file-path (:file-path file-extraction)
+                         file-name (:name file-extraction)]
+                     (map (fn [page-map]
+                            (page-map->record 
+                              (assoc page-map 
+                                     :file-path file-path
+                                     :file-name file-name)))
+                          (:org-charts file-extraction)))))
+         vec)))
 
 (defn extract-positions-from-chart-page
   "Extract positions from a specific org chart page. Returns an OrgChartPageResult record."
-  [file-path page description]
+  [file-path page description file-name]
   (try
     (let [positions (pdf/positions-on-page file-path page :unique? true)]
       (->OrgChartPageResult
@@ -86,7 +97,9 @@
        (count positions)
        positions
        :success
-       nil))
+       nil
+       file-path
+       file-name))
     (catch Exception e
       (->OrgChartPageResult
        page
@@ -94,7 +107,9 @@
        0
        []
        :error
-       (.getMessage e)))))
+       (.getMessage e)
+       file-path
+       file-name))))
 
 (defn extract-positions-from-org-charts
   "Extract all positions from all org charts defined in the mapping.
@@ -107,7 +122,7 @@
                 (let [chart-results
                       (mapv (fn [{:keys [page description]}]
                               (print "  Page" page "...")
-                              (let [result (extract-positions-from-chart-page file-path page description)]
+                              (let [result (extract-positions-from-chart-page file-path page description Name)]
                                 (println (if (= (:status result) :success)
                                            (str (:position-count result) " positions")
                                            "ERROR"))

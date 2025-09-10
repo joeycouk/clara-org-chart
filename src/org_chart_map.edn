@@ -1,7 +1,11 @@
-[{:file-path "resources/Sac HQ Org Charts 01.01.25.pdf"
+[ {:file-path "resources/Southern Region Org Charts 01.01.25.pdf"
+  :Name "Southern Region Org Charts 01.01.25"
+  :org-charts [{:page 14
+                :description "San Bernardino Unit (BDU"}]},
+ {:file-path "resources/Sac HQ Org Charts 01.01.25.pdf"
   :Name "Sac HQ Org Charts 01.01.25"
   :org-charts [{:page 1
-                :description " Senior Leadership"},
+                :description "Senior Leadership"},
                {:page 2
                 :description "Administrative Staff"},
                {:page 3
@@ -19,8 +23,8 @@
                {:page 10 :description "Fiscal Services"},
                {:page 11 :description "Fiscal Services 2"},
                {:page 12 :description "Contracts & Grants"},
-               {:page 13 :description"Contracts Section"},
-               {:page 14 :description "Grants Management Section" },
+               {:page 13 :description "Contracts Section"},
+               {:page 14 :description "Grants Management Section"},
                {:page 15 :description "Property & Local Services, & Fiscal Incident Support"},
-               {:page 16 :description "Procurement / Property & Local Services"}
-               ]}]
+               {:page 16 :description "Procurement / Property & Local Services"}]}
+]

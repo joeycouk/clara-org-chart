@@ -2,6 +2,23 @@
   (:require [clara.rules :refer :all])
   )
 
+(defn debug-headers 
+  "Debug function to see what headers are actually in the Excel file"
+  [xlsx-data]
+  (let [sheet (->> (:sheets xlsx-data)
+                   (filter #(= (:sheet-name %) "ALL REGIONS"))
+                   first)
+        cells (:cells sheet)
+        headers (->> cells
+                     (filter #(= (:row %) 0))
+                     (sort-by :col)
+                     (map :value))]
+    (println "=== EXCEL HEADERS DEBUG ===")
+    (println "Found" (count headers) "headers:")
+    (doseq [[idx header] (map-indexed vector headers)]
+      (println (format "%2d: %s" idx (pr-str header))))
+    headers))
+
 
 ;; Position	Title	Current Employee	Position Reports To Position	Position Reports To Position (Dotted Line)	City	Comments/Notes	Dotted_Reports	AgencyCode	UnitCode	ClassCode	SerialNumber	Unique_Flag	Time_Base	TB_Adjustment	Region
 (defrecord Position 
@@ -34,20 +51,25 @@
                    (filter #(= (:sheet-name %) "ALL REGIONS"))
                    first)
         cells (:cells sheet)
-        headers (->> cells
-                     (filter #(= (:row %) 0))
-                     (sort-by :col)
-                     (map :value))
+        ;; Get headers with their column positions
+        header-cells (->> cells
+                          (filter #(= (:row %) 0))
+                          (sort-by :col))
+        max-col (apply max (map :col header-cells))
+        ;; Create a complete header mapping with all columns 0 to max-col
+        complete-headers (into {} (map (fn [cell] [(:col cell) (:value cell)]) header-cells))
+        headers (mapv #(get complete-headers % nil) (range 0 (inc max-col)))
+        
         rows (->> cells
                   (remove #(= (:row %) 0))
                   (group-by :row))]
     (->> rows
          (sort-by first) ; deterministic ordering by row number
          (map (fn [[row-num row-cells]]
-                (let [row-map (->> row-cells
-                                   (sort-by :col)
-                                   (map :value)
-                                   (zipmap headers))]
+                ;; Create a complete row mapping with all columns 0 to max-col
+                (let [row-cell-map (into {} (map (fn [cell] [(:col cell) (:value cell)]) row-cells))
+                      complete-row-data (mapv #(get row-cell-map % nil) (range 0 (inc max-col)))
+                      row-map (zipmap headers complete-row-data)]
                   (map->Position
                    {;; original sheet row index (header row is 0)
                     :row-num row-num

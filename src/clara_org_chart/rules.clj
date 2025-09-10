@@ -11,11 +11,22 @@
   (:import (clara_org_chart.position Position)
            (clara_org_chart.org_chart_extractor 
                    OrgChartPageResult
-                   OrgChartFileSummary
-                   OrgChartFileExtraction
-                   ExtractionMetadata
-                   OrgChartPositionExtraction)))
+                )))
 
+(defrecord OrgChartPosition
+           [position page
+             ])
+
+
+(defrecord OrgChartError 
+           [
+             page
+             missing-position-code
+             extra-position-code
+             path
+             name
+             description
+           ])
 
 (defrecord PositionWarning
            [position 
@@ -56,7 +67,7 @@
 
 (rules/defrule calculate-total-subordinates
   "Recursively calculate total subordinates for each position"
-  [?pos <- Position (= position ?posNum)]
+  [?pos <- Position (= ?posNum position)]
   [?subs <- (accum/count) :from [Position (= ?posNum reports-to-position)]]
   ;; [?subSubs <- (accum/sum :total-subordinates) :from [ExtractedPosition (= ?posNum reports-to-position)]]
   =>
@@ -86,6 +97,40 @@
    )
 
 
+(rules/defrule break-org-chart-pages-into-positions
+  "Break org chart pages into individual positions"
+  [OrgChartPageResult (= ?page page) (= ?positions positions)]
+  =>
+  (doseq [pos ?positions]
+    (rules/insert! (->OrgChartPosition pos ?page))
+    ) 
+  )
+
+
+
+
+(rules/defrule detect-org-chart-position-mismatches
+  "Detect position code mismatches between extracted positions and org chart pages"
+  [OrgChartPosition (= ?page page) (= ?position position)]
+  [:not [Position (= ?position position)]]
+  [OrgChartPageResult (= ?page page) (= ?path file-path) (= ?name file-name) (= ?description description)]
+  =>
+  (rules/insert! (->OrgChartError
+                  ?page
+                  ?position
+                  nil
+                  ?path
+                  ?name
+                  ?description
+                  ))
+  )
+
+
+;; People working in sacramento who do not live in the sacramento area
+
+
+
+
 ;; (rules/defrule detect-duplicate-positions
 ;;   "Detect duplicate position codes"
 ;;   [ Position (= ?posNum position) (= ?rowNum row-num)]
@@ -110,6 +155,17 @@
   []
   [?orgChartPageResults <- (accum/all) :from [OrgChartPageResult]])
 
+
+(rules/defquery get-all-org-chart-positions
+  "Query to get back all the org chart positions"
+  []
+  [?orgChartPPositions <- (accum/all) :from [OrgChartPosition]])
+
+(rules/defquery get-all-org-chart-errors
+  "Query to get back all the org chart errors"
+  []
+  [?orgChartErrors <- (accum/all) :from [OrgChartError]])
+
 ;; (rules/defquery get-simple-position-values
 ;;   "Query to get all simple report values"
 ;;   []
@@ -131,11 +187,17 @@
                                  (extractor/load-org-chart-pages-as-records "extracted-org-chart-positions.edn")))
                              (rules/fire-rules)))
 
-  (tap> (rules/query results-streaming get-all-org-chart-page-values))
-  (tap> (rules/query results-streaming get-position-values))
+  (tap> (extractor/load-org-chart-pages-as-records "extracted-org-chart-positions.edn"))
+  (tap> (:?position-values (first (rules/query results-streaming get-position-values))))
+  (tap> (:?orgChartErrors (first (rules/query results-streaming get-all-org-chart-errors))))
+  (tap> (:?orgChartPPositions (first (rules/query results-streaming get-all-org-chart-positions))))
+  (tap> (:?orgChartPageResults (first (rules/query results-streaming get-all-org-chart-page-values))))
+  (tap> (:?position-values (first (rules/query results-streaming get-position-values))))
   (tap> (rules/query results-streaming get-simple-position-values))
 
   (def test-extraction (pos/extract-positions (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx" :streaming true)))
+
+  (tap> (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx" :streaming true))
 
   (tap> test-extraction)
 
@@ -155,6 +217,34 @@
 
 (tap> positions-with-counts)
   
+
+  
+    ;; Generate SVG for specific codes
+  (tangle/save-org-chart-for-codes (:?position-values (first (rules/query results-streaming get-position-values)))
+                                   (pdf/positions-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 12)
+                                   "San Bernardino Unit.svg"
+                                   :title (str "Southern Region Org Charts 01.01.25: San Bernardino Unit - Generated on " (java.time.LocalDate/now))
+                                   :format "svg" 
+                                   :strict-filter true
+                                   :errors (:?orgChartErrors (first (rules/query results-streaming get-all-org-chart-errors)))
+                                   )
+
+
+  (tangle/save-org-chart-for-codes (:?position-values (first (rules/query results-streaming get-position-values)))
+                                   ["541-028-4802-001"
+                                     "541-028-4800-004"
+                                     "541-028-4800-009"
+                                     "541-028-4801-003" 
+                                     "541-028-4800-015"
+                                     "541-028-4800-016"
+                                     "541-028-4800-904"
+                                     "541-020-7500-008"
+                                     "541-028-4800-022"]
+                                   "Contracts & Grants.svg"
+                                   :format "svg"
+                                   :strict-filter true
+                                   :errors (:?orgChartErrors (first (rules/query results-streaming get-all-org-chart-errors))))
+
 
   (tangle/save-org-chart-for-codes test-extraction
                                    (pdf/positions-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3))
