@@ -9,7 +9,10 @@
    )
   (:import (clara_org_chart.position Position)))
 
-           
+
+(defrecord PositionWarning
+           [position 
+             description])
 
 (defrecord ExtractedPosition
            [position
@@ -76,6 +79,18 @@
    )
 
 
+(rules/defrule detect-duplicate-positions
+  "Detect duplicate position codes"
+  [ Position (= ?posNum position) (= ?rowNum row-num)]
+  [ Position (not= ?rowNum row-num) (= ?posNum position) (= ?otherRowNum row-num)]
+  [:not [PositionWarning (= ?posNum position)]]
+  => 
+  (rules/insert! (->PositionWarning
+                   ?posNum
+                   (str "Duplicate position code detected: " ?posNum) "and" ?otherRowNum))
+  )
+
+
 
 (rules/defquery get-position-values
   "Query to get all position values"
@@ -83,10 +98,10 @@
   [?position-values <- (accum/all) :from [ExtractedPosition]])
 
 
-(rules/defquery get-simple-position-values
-  "Query to get all simple report values"
-  []
-  [?simpleReports <- (accum/all) :from [SimpleReport]])
+;; (rules/defquery get-simple-position-values
+;;   "Query to get all simple report values"
+;;   []
+;;   [?simpleReports <- (accum/all) :from [SimpleReport]])
 
 (comment
 
@@ -105,6 +120,8 @@
   (tap> (rules/query results-streaming get-simple-position-values))
 
   (def test-extraction (pos/extract-positions (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx" :streaming true)))
+
+  (tap> test-extraction)
 
   (pos/diagnose-hierarchy-issues test-extraction)
 

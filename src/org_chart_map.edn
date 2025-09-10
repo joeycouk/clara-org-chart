@@ -1,0 +1,26 @@
+[{:file-path "resources/Sac HQ Org Charts 01.01.25.pdf"
+  :Name "Sac HQ Org Charts 01.01.25"
+  :org-charts [{:page 1
+                :description " Senior Leadership"},
+               {:page 2
+                :description "Administrative Staff"},
+               {:page 3
+                :description "Department Accounting Office"},
+               {:page 4
+                :description "Travel, Revolving Fund, and Admin"},
+               {:page 5
+                :description "Fund and Labor Accounting"},
+               {:page 6
+                :description "Fund Accounting and Systems"},
+               {:page 7
+                :description "Accounts Receivable"},
+               {:page 8 :description "Accounts Payable and P-Card"},
+               {:page 9 :description "P-Card"},
+               {:page 10 :description "Fiscal Services"},
+               {:page 11 :description "Fiscal Services 2"},
+               {:page 12 :description "Contracts & Grants"},
+               {:page 13 :description"Contracts Section"},
+               {:page 14 :description "Grants Management Section" },
+               {:page 15 :description "Property & Local Services, & Fiscal Incident Support"},
+               {:page 16 :description "Procurement / Property & Local Services"}
+               ]}]
