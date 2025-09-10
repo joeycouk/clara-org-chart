@@ -6,8 +6,15 @@
    [pdfBoxing :as pdf]
    [clara.rules :as rules]
    [clara.rules.accumulators :as accum]
+   [clara-org-chart.org-chart-extractor :as extractor]
    )
-  (:import (clara_org_chart.position Position)))
+  (:import (clara_org_chart.position Position)
+           (clara_org_chart.org_chart_extractor 
+                   OrgChartPageResult
+                   OrgChartFileSummary
+                   OrgChartFileExtraction
+                   ExtractionMetadata
+                   OrgChartPositionExtraction)))
 
 
 (defrecord PositionWarning
@@ -79,16 +86,16 @@
    )
 
 
-(rules/defrule detect-duplicate-positions
-  "Detect duplicate position codes"
-  [ Position (= ?posNum position) (= ?rowNum row-num)]
-  [ Position (not= ?rowNum row-num) (= ?posNum position) (= ?otherRowNum row-num)]
-  [:not [PositionWarning (= ?posNum position)]]
-  => 
-  (rules/insert! (->PositionWarning
-                   ?posNum
-                   (str "Duplicate position code detected: " ?posNum) "and" ?otherRowNum))
-  )
+;; (rules/defrule detect-duplicate-positions
+;;   "Detect duplicate position codes"
+;;   [ Position (= ?posNum position) (= ?rowNum row-num)]
+;;   [ Position (not= ?rowNum row-num) (= ?posNum position) (= ?otherRowNum row-num)]
+;;   [:not [PositionWarning (= ?posNum position)]]
+;;   => 
+;;   (rules/insert! (->PositionWarning
+;;                    ?posNum
+;;                    (str "Duplicate position code detected: " ?posNum) "and" ?otherRowNum))
+;;   )
 
 
 
@@ -97,6 +104,11 @@
   []
   [?position-values <- (accum/all) :from [ExtractedPosition]])
 
+
+(rules/defquery get-all-org-chart-page-values
+  "Query to get back all the org chart page values"
+  []
+  [?orgChartPageResults <- (accum/all) :from [OrgChartPageResult]])
 
 ;; (rules/defquery get-simple-position-values
 ;;   "Query to get all simple report values"
@@ -113,9 +125,13 @@
 
   ;; 2. Streaming for very large files (memory efficient)
   (def results-streaming (-> test-session
-                             (rules/insert-all (pos/extract-positions (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx" :streaming true)))
+                             (rules/insert-all 
+                               (concat
+                                 (pos/extract-positions (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx" :streaming true))
+                                 (extractor/load-org-chart-pages-as-records "extracted-org-chart-positions.edn")))
                              (rules/fire-rules)))
 
+  (tap> (rules/query results-streaming get-all-org-chart-page-values))
   (tap> (rules/query results-streaming get-position-values))
   (tap> (rules/query results-streaming get-simple-position-values))
 
