@@ -74,20 +74,20 @@
                      (= employee-name "VACANT") 
                      {:fillcolor "lightgray" :fontcolor "red"}
                      
-                     (str/includes? (str/upper-case (or title "")) "DIRECTOR")
-                     {:fillcolor "lightblue" :fontweight "bold"}
+                    ;;  (str/includes? (str/upper-case (or title "")) "DIRECTOR")
+                    ;;  {:fillcolor "lightblue" :fontweight "bold"}
                      
-                     (str/includes? (str/upper-case (or title "")) "CHIEF")
-                     {:fillcolor "lightgreen" :fontweight "bold"}
+                    ;;  (str/includes? (str/upper-case (or title "")) "CHIEF")
+                    ;;  {:fillcolor "lightgreen" :fontweight "bold"}
                      
-                     (str/includes? (str/upper-case (or title "")) "DEPUTY")
-                     {:fillcolor "lightyellow"}
+                    ;;  (str/includes? (str/upper-case (or title "")) "DEPUTY")
+                    ;;  {:fillcolor "lightyellow"}
                      
-                     (str/includes? (str/upper-case (or title "")) "ASSISTANT")
-                     {:fillcolor "lightcyan"}
+                    ;;  (str/includes? (str/upper-case (or title "")) "ASSISTANT")
+                    ;;  {:fillcolor "lightcyan"}
                      
-                     (str/includes? (str/upper-case (or title "")) "CAPTAIN")
-                     {:fillcolor "wheat"}
+                    ;;  (str/includes? (str/upper-case (or title "")) "CAPTAIN")
+                    ;;  {:fillcolor "wheat"}
                      
                      :else
                      {:fillcolor "white"})

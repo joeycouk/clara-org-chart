@@ -13,9 +13,28 @@
                    OrgChartPageResult
                 )))
 
+
+
+;; Org chart page results have a list of postiions.  This isn't ideal for writing easy to understand rules.  Rather than a list i prefer a single object with a position value
 (defrecord OrgChartPosition
-           [position page
+           [
+             position
+             file-name
+             page
              ])
+(defrecord MatchingPosition
+           [ 
+             row-num
+             position 
+             reports-to-position
+             file-name
+             page
+             ]
+  )
+
+
+
+
 
 
 (defrecord OrgChartError 
@@ -23,8 +42,9 @@
              page
              missing-position-code
              extra-position-code
+             duplicate-position-code
              path
-             name
+             file-name
              description
            ])
 
@@ -33,7 +53,9 @@
              description])
 
 (defrecord ExtractedPosition
-           [position
+           [
+            row-num 
+            position
             title
             current-employee
             reports-to-position
@@ -74,6 +96,7 @@
 
   ;;  (println "Calculating total subordinates for position:" ?pos (get ?pos :position))
    (rules/insert! (->ExtractedPosition
+                   (get ?pos :row-num)
                    (get ?pos :position)
                    (get ?pos :title)
                    (get ?pos :current-employee)
@@ -99,34 +122,93 @@
 
 (rules/defrule break-org-chart-pages-into-positions
   "Break org chart pages into individual positions"
-  [OrgChartPageResult (= ?page page) (= ?positions positions)]
+  [OrgChartPageResult (= ?page page) (= ?positions positions) (= ?fileName file-name)]
   =>
   (doseq [pos ?positions]
-    (rules/insert! (->OrgChartPosition pos ?page))
+    (rules/insert! (->OrgChartPosition pos ?fileName ?page))
     ) 
   )
 
+;; TODO rename this thing
+(rules/defrule create-matching-rules
+  "Where the position numbers match perfectly, generate an instance of MatchingPosition"
+  [OrgChartPosition (= ?page page) (= ?position position) (= ?fileName file-name)]
+  [ExtractedPosition (= position ?position) (= ?reportsToPos reports-to-position) (= ?rowNum row-num) ]
+  =>
+  (rules/insert! (->MatchingPosition
+                  ?rowNum
+                  ?position
+                  ?reportsToPos
+                  ?fileName
+                  ?page
+                  ))
+  
+  )
 
 
-
+;; TODO rename this rule
 (rules/defrule detect-org-chart-position-mismatches
-  "Detect position code mismatches between extracted positions and org chart pages"
-  [OrgChartPosition (= ?page page) (= ?position position)]
-  [:not [Position (= ?position position)]]
+  "Detect positions where the org chart pdf specifies a position number which does not exist within the xlsx document"
+  [OrgChartPosition (= ?page page) (= ?position position) (= ?name file-name)]
+  [:not [MatchingPosition (= ?page page) (= ?name file-name) (= ?position position)]]
   [OrgChartPageResult (= ?page page) (= ?path file-path) (= ?name file-name) (= ?description description)]
   =>
   (rules/insert! (->OrgChartError
                   ?page
                   ?position
-                  nil
+                  nil ;; missing position
+                  nil ;; duplicate position
                   ?path
                   ?name
-                  ?description
+                  "Orgchart specified in the PDF that does not exist in the xlsx document"
                   ))
   )
 
 
-;; People working in sacramento who do not live in the sacramento area
+(rules/defrule detect-org-chart-position-duplicates
+  "Detect when multiple positions are mapped to an org chart with the same position number"
+  [?matchingRows <- (accum/distinct :row-num) :from [MatchingPosition (= ?page page) (= ?name file-name) (= ?position position)]]
+  [:test (> (count ?matchingRows) 1)]
+  [OrgChartPageResult (= ?page page) (= ?path file-path) (= ?name file-name) (= ?description description)]
+  =>
+  (rules/insert! (->OrgChartError
+                  ?page
+                  nil ;; missing-position-code
+                  nil ;;   extra-position-code
+                  ?position ;;duplicate position
+                  ?path
+                  ?name
+                  (str "Orgchart has multiple matched positions with the same number " ?matchingRows))))
+
+
+(rules/defrule detect-org-chart-missing-position
+  "Detect position contained within the xlsx file but not within the org chart pdf extraction"
+  [OrgChartPageResult 
+   (= ?page page) 
+   (= ?path file-path) 
+   (= ?name file-name) 
+   (= ?description description) 
+   (= ?positions positions) ]
+   [MatchingPosition (= ?page page) (= ?name file-name) (= ?position position) (= ?reportsToPosition reports-to-position) ]
+  ;; where the reports to position doesn't exist in the pdf
+  [:not [OrgChartPosition (= ?page page) (= ?name file-name) (= ?reportsToPosition position)]]
+  ;; now we need to check to see if this manager position is just meant to be represented on another org chart - this may just be a separation point
+  [?numberOfParticipatingOrgCharts <- (accum/count) :from [OrgChartPosition (not= ?page page) (= ?name file-name) (= ?reportsToPosition position) () ] ]
+  [:test (= ?numberOfParticipatingOrgCharts 0)]
+  =>
+  (tap> {
+         :page ?page
+         :name ?name
+         :description (str "XLSX specified a position not captured in this ORG chart:  " ?position " reports to " ?reportsToPosition)
+  })
+  (rules/insert! (->OrgChartError
+                  ?page
+                  ?reportsToPosition
+                  nil ;; missing position
+                  nil ;; duplicate position
+                  ?path
+                  ?name
+                  (str "XLSX specified a position not captured in this ORG chart:" ?position " reports to " ?reportsToPosition))))
 
 
 
@@ -153,7 +235,10 @@
 (rules/defquery get-all-org-chart-page-values
   "Query to get back all the org chart page values"
   []
-  [?orgChartPageResults <- (accum/all) :from [OrgChartPageResult]])
+  [?orgChartPageResults <- (accum/all) :from [OrgChartPageResult (= ?page page) (= ?fileName file-name) ]]
+  [?orgChartPositionMatches <- (accum/all) :from [MatchingPosition (= ?page page) (= ?fileName file-name) ]]
+   [?orgChartErrors <- (accum/all) :from [OrgChartError (= ?page page) (= ?fileName file-name)]]
+  )
 
 
 (rules/defquery get-all-org-chart-positions
@@ -192,6 +277,7 @@
   (tap> (:?orgChartErrors (first (rules/query results-streaming get-all-org-chart-errors))))
   (tap> (:?orgChartPPositions (first (rules/query results-streaming get-all-org-chart-positions))))
   (tap> (:?orgChartPageResults (first (rules/query results-streaming get-all-org-chart-page-values))))
+  (tap> (rules/query results-streaming get-all-org-chart-page-values))
   (tap> (:?position-values (first (rules/query results-streaming get-position-values))))
   (tap> (rules/query results-streaming get-simple-position-values))
 
@@ -221,9 +307,9 @@
   
     ;; Generate SVG for specific codes
   (tangle/save-org-chart-for-codes (:?position-values (first (rules/query results-streaming get-position-values)))
-                                   (pdf/positions-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 12)
+                                   (pdf/positions-on-page "resources/Sac HQ Org Charts 01.01.25.pdf" 41)
                                    "San Bernardino Unit.svg"
-                                   :title (str "Southern Region Org Charts 01.01.25: San Bernardino Unit - Generated on " (java.time.LocalDate/now))
+                                   :title (str "Sac HQ Org Charts 01.01.25- Generated on " (java.time.LocalDate/now))
                                    :format "svg" 
                                    :strict-filter true
                                    :errors (:?orgChartErrors (first (rules/query results-streaming get-all-org-chart-errors)))

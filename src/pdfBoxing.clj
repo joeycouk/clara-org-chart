@@ -116,7 +116,8 @@
 (comment
   ;; Example usage:
 (count ((comp vec extract-pages-pdfbox) "resources/Southern Region Org Charts 01.01.25.pdf"))
-(positions-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3)
+(tap> (positions-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3)
+      (tap> (extract-pages-pdfbox "resources/Southern Region Org Charts 01.01.25.pdf"))
 ;; (find-positions-in-pdf "Southern Region Org Charts 01.01.25.pdf")
 ;; (find-positions-in-pdf "Southern Region Org Charts 01.01.25.pdf" ["542-434-1083-901" "541-314-1402-601"]) 
   :rcf)
