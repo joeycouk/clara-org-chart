@@ -152,7 +152,7 @@
      :page-empty? (str/blank? text)
      :length (count text)
      :dash-frequency (dash-frequency text)
-     :snippet (subs text 0 (min 300 (count text)))}))
+     :snippet text}))
 
 ;; forward declare since raw-candidates-on-page references positions-on-page
 (declare positions-on-page)
@@ -242,4 +242,6 @@
     (println "Simple extraction found:" (count simple) "position codes")
     (println "Coordinate extraction found:" (count with-coords) "position codes")
     (println "All coordinate instances:" (map :text with-coords)))
+  
+  (tap> (debug-page "resources/Southern Region Org Charts 01.01.25.pdf" 2))
   :rcf)
