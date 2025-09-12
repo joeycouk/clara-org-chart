@@ -1,6 +1,7 @@
 (ns pdfBoxing
   (:import [org.apache.pdfbox.pdmodel PDDocument]
-           [org.apache.pdfbox.text PDFTextStripper])
+           [org.apache.pdfbox.text PDFTextStripper]
+           [org.apache.pdfbox.text TextPosition])
   (:require [clojure.java.io :as io]
             [clojure.string :as str]))
 
@@ -19,6 +20,115 @@
          (.setEndPage stripper page)
          (.getText stripper doc))
        (range 1 (inc (.getNumberOfPages doc)))))))
+
+(defn positions-with-coordinates-on-page
+  "Extract position codes with their x,y coordinates from a specific page.
+  Returns a vector of maps with :text (position code), :x, :y, :width, :height.
+  Returns ALL distinct instances - duplicates with identical coordinates are removed."
+  [pdf-path page-number & {:keys [debug?] :or {debug? false}}]
+  (with-open [doc (PDDocument/load (io/file pdf-path))]
+    (let [position-codes (atom [])
+          text-positions (atom [])
+          full-text (atom "")
+          stripper (proxy [PDFTextStripper] []
+                     (writeString [text text-pos-list]
+                       ;; Store all character positions for later processing
+                       (doseq [^TextPosition tp text-pos-list]
+                         (let [char (.getUnicode tp)
+                               char-index (count @full-text)]
+                           (swap! text-positions conj {:char char
+                                                       :x (.getX tp)
+                                                       :y (.getY tp)
+                                                       :width (.getWidth tp)
+                                                       :height (.getHeight tp)
+                                                       :index char-index})
+                           (swap! full-text str char)))
+                       
+                       ;; Call parent method to continue normal processing
+                       (proxy-super writeString text text-pos-list)))]
+      
+      (.setStartPage stripper page-number)
+      (.setEndPage stripper page-number)
+      (.getText stripper doc)
+      
+      ;; After all text is processed, find position codes and their coordinates
+      (let [final-text @full-text
+            all-positions @text-positions]
+        
+        (when debug?
+          (println "Final text length:" (count final-text))
+          (println "Total character positions:" (count all-positions)))
+        
+        ;; Find all position code matches in the final text
+        (let [matches (re-seq #"\d{3}-\d{3}-\d{4}-\d{3}" final-text)]
+          (when debug?
+            (println "Found position code matches:" matches))
+          
+          ;; For each match, find its location and extract coordinates
+          (doseq [match matches]
+            (let [match-pattern (re-pattern (java.util.regex.Pattern/quote match))
+                  matcher (re-matcher match-pattern final-text)]
+              
+              ;; Find all occurrences of this position code
+              (loop [found-positions []]
+                (if (.find matcher)
+                  (let [start-idx (.start matcher)
+                        end-idx (.end matcher)
+                        relevant-positions (filter #(and (>= (:index %) start-idx)
+                                                         (< (:index %) end-idx))
+                                                  all-positions)]
+                    
+                    (when debug?
+                      (println "Match" match "at indices" start-idx "to" end-idx
+                              "with" (count relevant-positions) "character positions"))
+                    
+                    (when (= (count relevant-positions) (count match))
+                      ;; Calculate bounding box
+                      (let [xs (map :x relevant-positions)
+                            ys (map :y relevant-positions)
+                            widths (map :width relevant-positions)
+                            heights (map :height relevant-positions)
+                            min-x (apply min xs)
+                            max-x (apply max (map + xs widths))
+                            min-y (apply min ys)
+                            max-y (apply max (map + ys heights))
+                            coord-data {:text match
+                                       :x min-x
+                                       :y min-y
+                                       :width (- max-x min-x)
+                                       :height (- max-y min-y)}]
+                        
+                        (swap! position-codes conj coord-data)
+                        (when debug?
+                          (println "Added coordinates for" match ":" coord-data))))
+                    
+                    (recur (conj found-positions [start-idx end-idx])))
+                  
+                  ;; No more matches found
+                  nil)))))
+      
+      (when debug?
+        (let [simple-matches (re-seq position-code-regex @full-text)
+              coord-matches @position-codes]
+          (println "\n=== COORDINATE EXTRACTION DEBUG ===")
+          (println "Page" page-number "final text length:" (count @full-text))
+          (println "Simple regex found" (count simple-matches) "matches:" simple-matches)
+          (println "Coordinate extraction found" (count coord-matches) "matches:" (map :text coord-matches))))
+      
+      ;; Return all position code instances, but deduplicate identical coordinates
+      ;; If text, x, y, width, and height are all identical, it's the same instance
+      (let [all-results @position-codes
+            unique-by-coords (->> all-results
+                                 (group-by (fn [entry] 
+                                            ;; Create a unique key from all coordinate values
+                                            [(:text entry) (:x entry) (:y entry) 
+                                             (:width entry) (:height entry)]))
+                                 (map (fn [[_coords entries]] (first entries))) ; Take first of each group
+                                 vec)]
+        (when debug?
+          (println "Before deduplication:" (count all-results) "entries")
+          (println "After deduplication:" (count unique-by-coords) "entries"))
+        unique-by-coords)))))
 
 
 ;; Debug helpers ------------------------------------------------------------
@@ -115,9 +225,21 @@
 
 (comment
   ;; Example usage:
-(count ((comp vec extract-pages-pdfbox) "resources/Southern Region Org Charts 01.01.25.pdf"))
-(tap> (positions-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3)
-      (tap> (extract-pages-pdfbox "resources/Southern Region Org Charts 01.01.25.pdf"))
-;; (find-positions-in-pdf "Southern Region Org Charts 01.01.25.pdf")
-;; (find-positions-in-pdf "Southern Region Org Charts 01.01.25.pdf" ["542-434-1083-901" "541-314-1402-601"]) 
+  (count ((comp vec extract-pages-pdfbox) "resources/Southern Region Org Charts 01.01.25.pdf"))
+  (tap> (positions-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3))
+  (tap> (extract-pages-pdfbox "resources/Southern Region Org Charts 01.01.25.pdf"))
+  ;; (find-positions-in-pdf "Southern Region Org Charts 01.01.25.pdf")
+  ;; (find-positions-in-pdf "Southern Region Org Charts 01.01.25.pdf" ["542-434-1083-901" "541-314-1402-601"]) 
+  
+  ;; Test coordinate extraction
+  (tap> (positions-with-coordinates-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3 :debug? true))
+  (tap> (positions-with-coordinates-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3))
+  
+  ;; Compare with simple text extraction
+  (let [simple (positions-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3)
+        with-coords (positions-with-coordinates-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3)]
+     (tap> with-coords)
+    (println "Simple extraction found:" (count simple) "position codes")
+    (println "Coordinate extraction found:" (count with-coords) "position codes")
+    (println "All coordinate instances:" (map :text with-coords)))
   :rcf)

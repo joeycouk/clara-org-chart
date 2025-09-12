@@ -17,12 +17,7 @@
                  (contains? code-set (:reports-to-position %)))
             positions)))
 
-(defn filter-positions-by-exact-codes
-  "Return only positions where :position exactly matches one of the codes (no automatic inclusion of reports)."
-  [positions codes]
-  (let [code-set (set codes)]
-    (filter #(contains? code-set (:position %))
-            positions)))
+
 
 (defn position->node-id
   "Convert a position string to a valid node ID"
@@ -185,15 +180,20 @@
 
 (defn create-reporting-edges
   "Create edges representing reporting relationships (supervisor -> subordinate)"
-  [positions]
-  (for [position positions
-        :let [subordinate-id (position->node-id (:position position))
-              supervisor-id (position->node-id (:reports-to-position position))]
-        :when (and subordinate-id supervisor-id 
-                   (not (str/blank? subordinate-id))
-                   (not (str/blank? supervisor-id)))]
-    ;; Note: This creates edges FROM supervisor TO subordinate (downward flow)
-    [supervisor-id subordinate-id {:color "black" :arrowhead "normal"}]))
+  [positions & {:keys [report-missing-positions] :or {report-missing-positions true}}]
+  (let [existing-position-ids (when-not report-missing-positions 
+                                (set (map :position positions)))]
+    (for [position positions
+          :let [subordinate-id (position->node-id (:position position))
+                supervisor-id (position->node-id (:reports-to-position position))]
+          :when (and subordinate-id supervisor-id 
+                     (not (str/blank? subordinate-id))
+                     (not (str/blank? supervisor-id))
+                     ;; Only include edge if we should report missing positions OR supervisor exists in dataset
+                     (or report-missing-positions 
+                         (contains? existing-position-ids (:reports-to-position position))))]
+      ;; Note: This creates edges FROM supervisor TO subordinate (downward flow)
+      [supervisor-id subordinate-id {:color "black" :arrowhead "normal"}])))
 
 (defn create-dotted-line-edges
   "Create dotted line edges representing matrix/dotted line relationships"
@@ -206,21 +206,6 @@
                    (not (str/blank? dotted-manager-id)))]
     [position-id dotted-manager-id {:style "dashed" :color "gray"}]))
 
-(defn create-referenced-supervisor-nodes
-  "Create nodes for supervisors that are referenced but not in the main position list"
-  [positions]
-  (let [existing-position-ids (set (map :position positions))
-        referenced-supervisor-ids (set (filter some? (map :reports-to-position positions)))
-        missing-supervisor-ids (clojure.set/difference referenced-supervisor-ids existing-position-ids)]
-    (for [supervisor-id missing-supervisor-ids
-          :when (not (str/blank? supervisor-id))]
-      {:id (position->node-id supervisor-id)
-       :label (str supervisor-id "\n(Referenced)")
-       :fillcolor "yellow"
-       :fontcolor "black"
-       :style "filled"
-       :shape "box"
-       :penwidth 2})))
 
 ;; Error visualization functions
 (defn create-error-node
@@ -413,42 +398,19 @@
         (println " -" id)))
     analysis))
 
-(defn create-placeholder-position
-  "Create a placeholder position for missing supervisors"
-  [position-id]
-  {:position position-id
-   :current-employee "External Position"
-   :title "Outside This Dataset"
-   :reports-to-position nil
-   :dotted-line-reports-to-position nil
-   :placeholder true})
 
-(defn ensure-complete-hierarchy
-  "Ensure all referenced positions are included in the dataset"
-  [positions]
-  (let [missing-ids (find-missing-supervisor-positions positions)
-        placeholder-positions (map create-placeholder-position missing-ids)]
-    (concat positions placeholder-positions)))
 
 (defn positions->org-chart
   "Convert a collection of Position records to org chart nodes and edges"
-  [positions & {:keys [show-codes include-dotted-lines strict-filter errors] 
-                :or {show-codes false include-dotted-lines true strict-filter false errors []}}]
-  (let [;; Optionally ensure we have all referenced positions
-        complete-positions (if strict-filter 
-                             positions  ; Use only the provided positions
-                             (ensure-complete-hierarchy positions))
-        ;; Sort positions hierarchically with roots first
-        sorted-positions (sort-positions-hierarchically complete-positions)
+  [positions & {:keys [show-codes include-dotted-lines errors report-missing-positions] 
+                :or {show-codes false include-dotted-lines true errors [] report-missing-positions true}}]
+  (let [;; Use only the provided positions - no external position inference
+        sorted-positions (sort-positions-hierarchically positions)
         position-nodes (map #(create-position-node % :show-codes show-codes) sorted-positions)
-        ;; When using strict filter, create nodes for referenced supervisors
-        referenced-supervisor-nodes (if strict-filter 
-                                       (create-referenced-supervisor-nodes positions)
-                                       [])
         error-nodes (map create-error-node errors)
         error-anchors (create-error-anchor errors)
-        all-nodes (concat position-nodes referenced-supervisor-nodes error-nodes (or error-anchors []))
-        solid-edges (create-reporting-edges sorted-positions)
+        all-nodes (concat position-nodes error-nodes (or error-anchors []))
+        solid-edges (create-reporting-edges sorted-positions :report-missing-positions report-missing-positions)
         dotted-edges (if include-dotted-lines (create-dotted-line-edges sorted-positions) [])
         root-positions (find-root-positions sorted-positions)
         error-edges (create-error-edges errors sorted-positions root-positions)
@@ -459,13 +421,13 @@
 
 (defn generate-large-org-chart-dot
   "Generate DOT notation optimized for large org charts (500+ positions)"
-  [positions & {:keys [show-codes include-dotted-lines rankdir strict-filter errors title]
-                :or {show-codes false include-dotted-lines false rankdir "TB" strict-filter false errors [] title nil}}]
+  [positions & {:keys [show-codes include-dotted-lines rankdir errors title report-missing-positions]
+                :or {show-codes false include-dotted-lines false rankdir "TB" errors [] title nil report-missing-positions true}}]
   (let [{:keys [nodes edges]} (positions->org-chart positions 
                                                                 :show-codes show-codes
                                                                 :include-dotted-lines include-dotted-lines
-                                                                :strict-filter strict-filter
-                                                                :errors errors)
+                                                                :errors errors
+                                                                :report-missing-positions report-missing-positions)
         graph-config (cond-> {:rankdir rankdir          ; Top-down or left-right layout
                               :dpi 150                  ; Fixed resolution
                               :splines "ortho"          ; Orthogonal edges
@@ -498,13 +460,13 @@
 
 (defn generate-org-chart-dot
   "Generate DOT notation for an org chart with proper hierarchical layout"
-  [positions & {:keys [show-codes include-dotted-lines rankdir strict-filter errors title]
-                :or {show-codes false include-dotted-lines true rankdir "TB" strict-filter false errors [] title nil}}]
+  [positions & {:keys [show-codes include-dotted-lines rankdir errors title report-missing-positions]
+                :or {show-codes false include-dotted-lines true rankdir "TB" errors [] title nil report-missing-positions true}}]
   (let [{:keys [nodes edges]} (positions->org-chart positions 
                                                                 :show-codes show-codes
                                                                 :include-dotted-lines include-dotted-lines
-                                                                :strict-filter strict-filter
-                                                                :errors errors)
+                                                                :errors errors
+                                                                :report-missing-positions report-missing-positions)
         graph-config (cond-> {:rankdir rankdir          ; Top-down layout
                               :dpi 150                  ; High resolution
                               :splines "ortho"          ; Orthogonal edges
@@ -594,38 +556,19 @@
     
     selected-positions))
 
-(defn ensure-supervisors-included
-  "Given a set of positions, ensure their supervisors are also included from the full dataset"
-  [selected-positions full-dataset]
-  (let [full-position-map (into {} (map (juxt :position identity) full-dataset))
-        selected-ids (set (map :position selected-positions))
-        
-        ;; Find supervisors referenced by selected positions
-        referenced-supervisor-ids (set (filter some? (map :reports-to-position selected-positions)))
-        
-        ;; Get supervisor positions from full dataset
-        missing-supervisors (keep #(when (and (contains? referenced-supervisor-ids %)
-                                             (not (contains? selected-ids %)))
-                                    (get full-position-map %))
-                                 referenced-supervisor-ids)]
-    
-    ;; Combine selected positions with their supervisors
-    (concat selected-positions missing-supervisors)))
+
 
 (defn save-simplified-org-chart
   "Save a simplified org chart optimized for large datasets"
-  [positions filename & {:keys [format max-positions show-vacant include-dotted-lines]
-                         :or {format "png" max-positions 75 show-vacant false include-dotted-lines false}}]
+  [positions filename & {:keys [format max-positions show-vacant include-dotted-lines report-missing-positions]
+                         :or {format "png" max-positions 75 show-vacant false include-dotted-lines false report-missing-positions true}}]
   (let [;; First, take a basic selection
         basic-selection (take max-positions positions)
         
-        ;; Then ensure supervisors are included from the full dataset
-        positions-with-supervisors (ensure-supervisors-included basic-selection positions)
-        
-        ;; Filter out vacant positions if requested
+        ;; Filter out vacant positions if requested - no external supervisor inclusion
         filtered-positions (if show-vacant 
-                            positions-with-supervisors
-                            (remove #(= (str/upper-case (or (:current-employee %) "")) "VACANT") positions-with-supervisors))
+                            basic-selection
+                            (remove #(= (str/upper-case (or (:current-employee %) "")) "VACANT") basic-selection))
         
         ;; For SVG, limit to prevent memory issues - use safe limits based on testing
         final-positions (case format
@@ -638,11 +581,13 @@
                       (generate-large-org-chart-dot final-positions
                                                     :show-codes false
                                                     :include-dotted-lines include-dotted-lines
-                                                    :rankdir "TB")
+                                                    :rankdir "TB"
+                                                    :report-missing-positions report-missing-positions)
                       (generate-org-chart-dot final-positions
                                               :show-codes false
                                               :include-dotted-lines include-dotted-lines
-                                              :rankdir "TB"))]
+                                              :rankdir "TB"
+                                              :report-missing-positions report-missing-positions))]
     (case (keyword format)
       :png (dot->image dot-content filename)
       :svg (let [dot-filename (str/replace filename #"\.svg$" ".dot")]
@@ -658,16 +603,16 @@
 
 (defn save-org-chart
   "Save an org chart as an image file"
-  [positions filename & {:keys [format show-codes include-dotted-lines rankdir strict-filter errors title]
+  [positions filename & {:keys [format show-codes include-dotted-lines rankdir errors title report-missing-positions]
                          :or {format "png" show-codes false
-                              include-dotted-lines true rankdir "TB" strict-filter false errors [] title nil}}]
+                              include-dotted-lines true rankdir "TB" errors [] title nil report-missing-positions true}}]
   (let [dot (generate-org-chart-dot positions
                                     :show-codes show-codes
                                     :include-dotted-lines include-dotted-lines
                                     :rankdir rankdir
-                                    :strict-filter strict-filter
                                     :errors errors
-                                    :title title)]
+                                    :title title
+                                    :report-missing-positions report-missing-positions)]
     (case format
       "svg" (copy (dot->svg dot) (file filename))
       "png" (copy (dot->image dot "png") (file filename))
@@ -691,20 +636,21 @@
     (println (str "Generated " (count subsets) " departmental org charts"))))
 
 (defn save-org-chart-for-codes
-  "Save an org chart for only the positions matching the given codes (by :position or :reports-to-position)."
-  [positions codes output-file & {:keys [format show-codes include-dotted-lines rankdir strict-filter errors title]
-                                  :or {format "png" show-codes false include-dotted-lines true rankdir "TB" strict-filter false errors [] title nil}}]
-  (let [filtered (if strict-filter 
-                   (filter-positions-by-exact-codes positions codes)
+  "Save an org chart for only the positions matching the given codes (by :position or :reports-to-position).
+  If codes is empty, includes all positions."
+  [positions codes output-file & {:keys [format show-codes include-dotted-lines rankdir errors title report-missing-positions]
+                                  :or {format "png" show-codes false include-dotted-lines true rankdir "TB" errors [] title nil report-missing-positions true}}]
+  (let [filtered (if (empty? codes)
+                   positions  ; If no codes specified, include all positions
                    (filter-positions-by-codes positions codes))]
     (save-org-chart filtered output-file
                     :format format
                     :show-codes show-codes
                     :include-dotted-lines include-dotted-lines
                     :rankdir rankdir
-                    :strict-filter strict-filter
                     :errors errors
-                    :title title)))
+                    :title title
+                    :report-missing-positions report-missing-positions)))
 
 (defn save-executive-summary-chart
   "Save a high-level executive summary chart with only top positions"
@@ -732,10 +678,10 @@
 
 (defn generate-multi-department-chart
   "Generate an org chart with departments as subgraphs"
-  [positions & {:keys [show-codes rankdir]
-                :or {show-codes false rankdir "TB"}}]
+  [positions & {:keys [show-codes rankdir report-missing-positions]
+                :or {show-codes false rankdir "TB" report-missing-positions true}}]
   (let [all-nodes (map #(create-position-node % :show-codes show-codes) positions)
-        all-edges (create-reporting-edges positions)]
+        all-edges (create-reporting-edges positions :report-missing-positions report-missing-positions)]
     
     (graph->dot all-nodes all-edges
                 {:directed? true

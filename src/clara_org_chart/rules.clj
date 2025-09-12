@@ -7,6 +7,7 @@
    [clara.rules :as rules]
    [clara.rules.accumulators :as accum]
    [clara-org-chart.org-chart-extractor :as extractor]
+   [clojure.string :as str]
    )
   (:import (clara_org_chart.position Position)
            (clara_org_chart.org_chart_extractor 
@@ -15,18 +16,39 @@
 
 
 
-;; Org chart page results have a list of postiions.  This isn't ideal for writing easy to understand rules.  Rather than a list i prefer a single object with a position value
+;; Org chart page results have a list of positions. This isn't ideal for writing easy to understand rules. Rather than a list i prefer a single object with a position value
 (defrecord OrgChartPosition
            [
-             position
-             file-name
-             page
+             position      ; The position code text (string)
+             file-name     ; File name where the position was found
+             page          ; Page number where the position was found
+             x             ; X coordinate of the position in the PDF  
+             y             ; Y coordinate of the position in the PDF
+             width         ; Width of the position text bounding box
+             height        ; Height of the position text bounding box
              ])
 (defrecord MatchingPosition
            [ 
              row-num
              position 
+             title
+             current-employee
              reports-to-position
+             dotted-line-reports-to-position
+             city 
+             comments-notes
+             dotted-reports
+             agencycode
+             unitcode
+             classcode
+             serialnumber
+             unique-flag
+             time-base
+             tb-adjustment
+             region
+             direct-subordinates
+             total-subordinates
+             part-time
              file-name
              page
              ]
@@ -72,7 +94,9 @@
             tb-adjustment
             region
             direct-subordinates 
-            total-subordinates])
+            total-subordinates
+            part-time
+            ])
 
 
 
@@ -84,6 +108,23 @@
        (not (empty? value))
        (re-matches #"^\d{3}-\d{3}-\d{4}-\d{3}$" value)))
 
+(defn parse-position-with-time-base
+  "Parse a position string that may contain (.5) indicating part-time.
+  Returns a map with :position (cleaned) and :part-time (boolean).
+  
+  Examples:
+    '542-062-1039-904 (.5)' -> {:position '542-062-1039-904', :part-time true}
+    '542-062-1039-904'      -> {:position '542-062-1039-904', :part-time false}"
+  [position-str]
+  (when (and position-str (string? position-str))
+    (let [trimmed (str/trim position-str)
+          part-time? (str/includes? trimmed "(.5)")
+          cleaned-position (-> trimmed
+                               (str/replace #"\s*\(\.5\)\s*" "")
+                               str/trim)]
+      {:position cleaned-position
+       :part-time part-time?})))
+
 
 
 
@@ -94,10 +135,12 @@
   ;; [?subSubs <- (accum/sum :total-subordinates) :from [ExtractedPosition (= ?posNum reports-to-position)]]
   =>
 
-  ;;  (println "Calculating total subordinates for position:" ?pos (get ?pos :position))
+  (let [position-info (parse-position-with-time-base (get ?pos :position))
+        cleaned-position (:position position-info)
+        part-time? (:part-time position-info)]
    (rules/insert! (->ExtractedPosition
                    (get ?pos :row-num)
-                   (get ?pos :position)
+                   cleaned-position
                    (get ?pos :title)
                    (get ?pos :current-employee)
                    (get ?pos :reports-to-position)
@@ -115,8 +158,9 @@
                    (get ?pos :region)
                    (or ?subs 0)
                    0
+                   part-time?
                   ;;  (+ ?subs (or ?subSubs 0))
-                   ))
+                   )))
    )
 
 
@@ -124,8 +168,16 @@
   "Break org chart pages into individual positions"
   [OrgChartPageResult (= ?page page) (= ?positions positions) (= ?fileName file-name)]
   =>
-  (doseq [pos ?positions]
-    (rules/insert! (->OrgChartPosition pos ?fileName ?page))
+  (doseq [pos-record ?positions]
+    (rules/insert! (->OrgChartPosition 
+                    (:text pos-record)    ; Extract position text from PositionWithCoordinates
+                    ?fileName 
+                    ?page
+                    (:x pos-record)       ; X coordinate
+                    (:y pos-record)       ; Y coordinate  
+                    (:width pos-record)   ; Width
+                    (:height pos-record)  ; Height
+                    ))
     ) 
   )
 
@@ -133,12 +185,30 @@
 (rules/defrule create-matching-rules
   "Where the position numbers match perfectly, generate an instance of MatchingPosition"
   [OrgChartPosition (= ?page page) (= ?position position) (= ?fileName file-name)]
-  [ExtractedPosition (= position ?position) (= ?reportsToPos reports-to-position) (= ?rowNum row-num) ]
+  [?extractedPosition <- ExtractedPosition (= ?position position) (= ?rowNum row-num) ]
   =>
+  ;; (tap> (conj ?extractedPosition {:file-name ?fileName}))
   (rules/insert! (->MatchingPosition
-                  ?rowNum
-                  ?position
-                  ?reportsToPos
+                  (get ?extractedPosition :row-num)
+                  (get ?extractedPosition :position)
+                  (get ?extractedPosition :title)
+                  (get ?extractedPosition :current-employee)
+                  (get ?extractedPosition :reports-to-position)
+                  (get ?extractedPosition :dotted-line-reports-to-position)
+                  (get ?extractedPosition :city)
+                  (get ?extractedPosition :comments-notes)
+                  (get ?extractedPosition :dotted-reports)
+                  (get ?extractedPosition :agencycode)
+                  (get ?extractedPosition :unitcode)
+                  (get ?extractedPosition :classcode)
+                  (get ?extractedPosition :serialnumber)
+                  (get ?extractedPosition :unique-flag)
+                  (get ?extractedPosition :time-base)
+                  (get ?extractedPosition :tb-adjustment)
+                  (get ?extractedPosition :region)
+                  (get ?extractedPosition :direct-subordinates)
+                  (get ?extractedPosition :total-subordinates)
+                  (get ?extractedPosition :part-time)
                   ?fileName
                   ?page
                   ))
@@ -196,11 +266,11 @@
   [?numberOfParticipatingOrgCharts <- (accum/count) :from [OrgChartPosition (not= ?page page) (= ?name file-name) (= ?reportsToPosition position) () ] ]
   [:test (= ?numberOfParticipatingOrgCharts 0)]
   =>
-  (tap> {
-         :page ?page
-         :name ?name
-         :description (str "XLSX specified a position not captured in this ORG chart:  " ?position " reports to " ?reportsToPosition)
-  })
+  ;; (tap> {
+  ;;        :page ?page
+  ;;        :name ?name
+  ;;        :description (str "XLSX specified a position not captured in this ORG chart:  " ?position " reports to " ?reportsToPosition)
+  ;; })
   (rules/insert! (->OrgChartError
                   ?page
                   ?reportsToPosition
@@ -241,6 +311,15 @@
   )
 
 
+(rules/defquery get-specific-org-chart-page-values
+  "Query to get back a specified the org chart page value"
+  [:?fileName :?page ] 
+  [?orgChartPageResults <- (accum/all) :from [OrgChartPageResult (= ?page page) (= ?fileName file-name)]]
+  [?orgChartPositionMatches <- (accum/all) :from [MatchingPosition (= ?page page) (= ?fileName file-name)]]
+  [?orgChartErrors <- (accum/all) :from [OrgChartError (= ?page page) (= ?fileName file-name)]]
+  )
+
+
 (rules/defquery get-all-org-chart-positions
   "Query to get back all the org chart positions"
   []
@@ -266,10 +345,10 @@
 
   ;; 2. Streaming for very large files (memory efficient)
   (def results-streaming (-> test-session
-                             (rules/insert-all 
-                               (concat
-                                 (pos/extract-positions (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx" :streaming true))
-                                 (extractor/load-org-chart-pages-as-records "extracted-org-chart-positions.edn")))
+                             (rules/insert-all
+                              (concat
+                               (pos/extract-positions (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx" :streaming true))
+                               (extractor/load-org-chart-pages-as-records "extracted-org-chart-positions.edn")))
                              (rules/fire-rules)))
 
   (tap> (extractor/load-org-chart-pages-as-records "extracted-org-chart-positions.edn"))
@@ -278,6 +357,7 @@
   (tap> (:?orgChartPPositions (first (rules/query results-streaming get-all-org-chart-positions))))
   (tap> (:?orgChartPageResults (first (rules/query results-streaming get-all-org-chart-page-values))))
   (tap> (rules/query results-streaming get-all-org-chart-page-values))
+  (tap> (rules/query results-streaming get-specific-org-chart-page-values :?fileName "Sac HQ Org Charts 01.01.25" :?page 47))
   (tap> (:?position-values (first (rules/query results-streaming get-position-values))))
   (tap> (rules/query results-streaming get-simple-position-values))
 
@@ -291,9 +371,9 @@
 
 
   ;; Get positions with subordinate counts calculated
-(def positions-with-counts 
-  (pos/extract-positions-with-counts 
-    (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx" :streaming true)))
+  (def positions-with-counts
+    (pos/extract-positions-with-counts
+     (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx" :streaming true)))
 
   (pos/verify-hierarchy-consistency positions-with-counts)
 
@@ -301,34 +381,68 @@
    (pos/extract-positions (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx" :streaming true))
    ["541-031-7500-001"])
 
-(tap> positions-with-counts)
+  (tap> positions-with-counts)
+ 
   
+  (tap> (:?orgChartPositionMatches (first (rules/query results-streaming get-specific-org-chart-page-values :?fileName "Sac HQ Org Charts 01.01.25" :?page 47))))
 
   
-    ;; Generate SVG for specific codes
+ (let [queryResult (rules/query results-streaming get-specific-org-chart-page-values :?fileName "Sac HQ Org Charts 01.01.25" :?page 47)
+       positions (:?orgChartPositionMatches (first queryResult))
+       errors (:?orgChartErrors (first queryResult))
+       title (:description (first (:?orgChartPageResults (first queryResult))))
+       format "svg"
+       pdfDocuumentName (:file-name (first (:?orgChartPageResults (first queryResult))))
+       page (:page (first (:?orgChartPageResults (first queryResult))))
+       filename (str pdfDocuumentName title " page " page "." format)
+       ]
+    (tap> {
+           :positions positions
+           :errors errors
+           :title title
+           :format format
+           :pdfDocuumentName pdfDocuumentName
+           :page page
+           :filename filename
+    })
+   
+     (tangle/save-org-chart-for-codes positions
+                                      []
+                                    filename
+                                    :title title
+                                    :format format 
+                                    :errors errors
+                                    :report-missing-positions false)  ; Hide edges to missing positions
+
+ )
+
+
+
+
+
+(tap> (:?position-values (first (rules/query results-streaming get-position-values))))
+  
+  ;; Generate SVG for specific codes
   (tangle/save-org-chart-for-codes (:?position-values (first (rules/query results-streaming get-position-values)))
                                    (pdf/positions-on-page "resources/Sac HQ Org Charts 01.01.25.pdf" 41)
                                    "San Bernardino Unit.svg"
                                    :title (str "Sac HQ Org Charts 01.01.25- Generated on " (java.time.LocalDate/now))
-                                   :format "svg" 
-                                   :strict-filter true
-                                   :errors (:?orgChartErrors (first (rules/query results-streaming get-all-org-chart-errors)))
-                                   )
+                                   :format "svg"
+                                   :errors (:?orgChartErrors (first (rules/query results-streaming get-all-org-chart-errors))))
 
 
   (tangle/save-org-chart-for-codes (:?position-values (first (rules/query results-streaming get-position-values)))
                                    ["541-028-4802-001"
-                                     "541-028-4800-004"
-                                     "541-028-4800-009"
-                                     "541-028-4801-003" 
-                                     "541-028-4800-015"
-                                     "541-028-4800-016"
-                                     "541-028-4800-904"
-                                     "541-020-7500-008"
-                                     "541-028-4800-022"]
+                                    "541-028-4800-004"
+                                    "541-028-4800-009"
+                                    "541-028-4801-003"
+                                    "541-028-4800-015"
+                                    "541-028-4800-016"
+                                    "541-028-4800-904"
+                                    "541-020-7500-008"
+                                    "541-028-4800-022"]
                                    "Contracts & Grants.svg"
                                    :format "svg"
-                                   :strict-filter true
                                    :errors (:?orgChartErrors (first (rules/query results-streaming get-all-org-chart-errors))))
 
 
@@ -345,4 +459,6 @@
                                    (pdf/positions-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3)
                                    "subset-org-chart.dot"
                                    :format "dot")
+
+
   :rcf)

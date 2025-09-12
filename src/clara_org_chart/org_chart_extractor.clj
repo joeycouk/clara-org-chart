@@ -6,11 +6,18 @@
 
 ;; Records for structured org chart position extraction data
 
+(defrecord PositionWithCoordinates
+  [text                ; The position code string (e.g., "542-434-1083-901")
+   x                   ; X coordinate of the position code in the PDF
+   y                   ; Y coordinate of the position code in the PDF
+   width               ; Width of the position code text bounding box
+   height])            ; Height of the position code text bounding box
+
 (defrecord OrgChartPageResult
   [page                ; Page number (integer)
    description         ; Description of the org chart (string)
    position-count      ; Number of positions found (integer)
-   positions           ; Vector of position code strings
+   positions           ; Vector of PositionWithCoordinates records
    status              ; :success or :error (keyword)
    error               ; Error message if status is :error (optional string)
    file-path           ; Path to the PDF file (string)
@@ -90,12 +97,20 @@
   "Extract positions from a specific org chart page. Returns an OrgChartPageResult record."
   [file-path page description file-name]
   (try
-    (let [positions (pdf/positions-on-page file-path page :unique? true)]
+    (let [position-coords (pdf/positions-with-coordinates-on-page file-path page)
+          position-records (mapv (fn [coord-map]
+                                   (->PositionWithCoordinates
+                                    (:text coord-map)
+                                    (:x coord-map)
+                                    (:y coord-map)
+                                    (:width coord-map)
+                                    (:height coord-map)))
+                                 position-coords)]
       (->OrgChartPageResult
        page
        description
-       (count positions)
-       positions
+       (count position-records)
+       position-records
        :success
        nil
        file-path
@@ -192,23 +207,46 @@
       (println "Total org chart pages processed:" total-charts)
       (println "Total position codes extracted:" total-positions))
     
-    extraction-results))
+    ;; extraction-results
+    ))
+
+;; Helper functions for working with PositionWithCoordinates records
+
+(defn position-text
+  "Extract the position code text from a PositionWithCoordinates record."
+  [position-record]
+  (:text position-record))
+
+(defn positions->texts
+  "Convert a collection of PositionWithCoordinates records to position code strings."
+  [position-records]
+  (map position-text position-records))
 
 (defn get-positions-for-description
   "Helper function to find all positions for org charts matching a description pattern.
-  Takes an OrgChartPositionExtraction record and returns a vector of position codes."
+  Returns a vector of PositionWithCoordinates records."
   [extraction-results description-pattern]
   (let [pattern (re-pattern (str "(?i)" description-pattern))] ; case-insensitive
     (->> (:extractions extraction-results)
          (mapcat :org-charts)
          (filter #(re-find pattern (:description %)))
          (mapcat :positions)
-         distinct
+         ;; Deduplicate by position text while preserving first occurrence with coordinates
+         (group-by :text)
+         (map (fn [[_text records]] (first records)))
          vec)))
+
+(defn get-position-texts-for-description
+  "Helper function to find all position code texts for org charts matching a description pattern.
+  Returns a vector of position code strings (legacy compatibility)."
+  [extraction-results description-pattern]
+  (->> (get-positions-for-description extraction-results description-pattern)
+       (map :text)
+       vec))
 
 (defn get-positions-by-file
   "Helper function to get all positions organized by file.
-  Takes an OrgChartPositionExtraction record and returns a vector of file summaries."
+  Takes an OrgChartPositionExtraction record and returns a vector of file summaries with PositionWithCoordinates."
   [extraction-results]
   (->> (:extractions extraction-results)
        (map (fn [{:keys [name file-path org-charts]}]
@@ -216,8 +254,15 @@
                :file-path file-path
                :all-positions (->> org-charts
                                    (mapcat :positions)
-                                   distinct
-                                   vec)}))
+                                   ;; Deduplicate by position text, keeping first occurrence
+                                   (group-by :text)
+                                   (map (fn [[_text records]] (first records)))
+                                   vec)
+               :all-position-texts (->> org-charts
+                                        (mapcat :positions)
+                                        (map :text)
+                                        distinct
+                                        vec)}))
        vec))
 
 ;; Main execution function
