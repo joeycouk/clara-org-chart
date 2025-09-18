@@ -6,7 +6,8 @@
 (defn start-portal! 
   "Start Portal and return the portal instance"
   []
-  (def portal (p/open {:theme :portal.colors/nord}))
+  (def portal (p/open {:theme :portal.colors/nord
+                       :launcher {:command ["C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"]}}))
   (add-tap #'p/submit)
   (println "Portal started! Access at" (str "http://localhost:" (:port portal)))
   portal)

@@ -4,7 +4,7 @@
    [org-tangle :as tangle]
    [clara-org-chart.position :as pos]
    [pdfBoxing :as pdf]
-   [clara.rules :refer [defrule defquery insert! defsession insert-all fire-rules query]]
+   [clara.rules :refer [defrule defquery insert! insert-all! insert-unconditional! defsession insert-all fire-rules query]]
    [clara.rules.accumulators :as accum]
    [clara-org-chart.org-chart-extractor :as extractor]
    [clojure.string :as str]
@@ -27,6 +27,34 @@
              width         ; Width of the position text bounding box
              height        ; Height of the position text bounding box
              ])
+
+
+(defrecord TempDuplicateMatchingPosition
+           [row-num
+            position
+            title
+            current-employee
+            reports-to-position
+            dotted-line-reports-to-position
+            city
+            comments-notes
+            dotted-reports
+            agencycode
+            unitcode
+            classcode
+            serialnumber
+            unique-flag
+            time-base
+            tb-adjustment
+            region
+            direct-subordinates
+            total-subordinates
+            part-time
+            file-name
+            page])
+
+
+
 (defrecord MatchingPosition
            [ 
              row-num
@@ -187,7 +215,6 @@
   [OrgChartPosition (= ?page page) (= ?position position) (= ?fileName file-name)]
   [?extractedPosition <- ExtractedPosition (= ?position position) ]
   =>
-  ;; (tap> (conj ?extractedPosition {:file-name ?fileName}))
   (insert! (->MatchingPosition
                   (get ?extractedPosition :row-num)
                   (get ?extractedPosition :position)
@@ -215,45 +242,52 @@
   
   )
 
+
+;; deduplicate the consistently missing manager positions
+(defrule flatten-out-missing-manager-duplicates
+  "deduplicate the missing managers identified"
+  [?distinctDuplicates <- (accum/distinct) :from [TempDuplicateMatchingPosition]]
+  =>
+  (tap> ?distinctDuplicates)
+  (insert-all! (map map->MatchingPosition ?distinctDuplicates))
+  )
+
+
+
 ;; New rule to identify when multiple extract positions within the same page report to a person but that person is not included yet
 (defrule find-consistently-missing-manager
   "identify when multiple extract positions within the same page report to a person but that person is not included yet"
   [OrgChartPosition (= ?page page) (= ?position position) (= ?fileName file-name)] 
-  [ExtractedPosition (= ?position position) (= ?reportsToPosition reports-to-position)]
+  [ExtractedPosition (= ?position position) (= ?reportsToPosition reports-to-position)] 
   [:not [OrgChartPosition (= ?page page) (= ?reportsToPosition position) (= ?fileName file-name)]] 
   [?reportsToExtractedPosition <- ExtractedPosition (= ?reportsToPosition position)]
   [?numberOfPeopleReportingToThisGuy <- (accum/count) :from [MatchingPosition (= ?page page) (= ?reportsToPosition reports-to-position) (= ?fileName file-name)]]
   [:test (> ?numberOfPeopleReportingToThisGuy 1)]
 
   =>
-  ;; WORK IN PROGRESS!!!!!!
-  (tap> (conj ?reportsToExtractedPosition {:file-name ?fileName :page ?page :reporter-position ?position}))
-
-
-
-  ;; (insert! (->MatchingPosition
-  ;;               (get ?reportsToExtractedPosition :row-num)
-  ;;               (get ?reportsToExtractedPosition :position)
-  ;;               (get ?reportsToExtractedPosition :title)
-  ;;               (get ?reportsToExtractedPosition :current-employee)
-  ;;               (get ?reportsToExtractedPosition :reports-to-position)
-  ;;               (get ?reportsToExtractedPosition :dotted-line-reports-to-position)
-  ;;               (get ?reportsToExtractedPosition :city)(= ?fileName file-name)
-  ;;               (get ?reportsToExtractedPosition :comments-notes)
-  ;;               (get ?reportsToExtractedPosition :dotted-reports)
-  ;;               (get ?reportsToExtractedPosition :agencycode)
-  ;;               (get ?reportsToExtractedPosition :unitcode)
-  ;;               (get ?reportsToExtractedPosition :classcode)
-  ;;               (get ?reportsToExtractedPosition :serialnumber)
-  ;;               (get ?reportsToExtractedPosition :unique-flag)
-  ;;               (get ?reportsToExtractedPosition :time-base)
-  ;;               (get ?reportsToExtractedPosition :tb-adjustment)
-  ;;               (get ?reportsToExtractedPosition :region)
-  ;;               (get ?reportsToExtractedPosition :direct-subordinates)
-  ;;               (get ?reportsToExtractedPosition :total-subordinates)
-  ;;               (get ?reportsToExtractedPosition :part-time)
-  ;;               ?fileName
-  ;;               ?page))
+  (insert-unconditional! (->TempDuplicateMatchingPosition
+            (get ?reportsToExtractedPosition :row-num)
+            (get ?reportsToExtractedPosition :position)
+            (get ?reportsToExtractedPosition :title)
+            (get ?reportsToExtractedPosition :current-employee)
+            (get ?reportsToExtractedPosition :reports-to-position)
+            (get ?reportsToExtractedPosition :dotted-line-reports-to-position)
+            (get ?reportsToExtractedPosition :city)
+            (get ?reportsToExtractedPosition :comments-notes)
+            (get ?reportsToExtractedPosition :dotted-reports)
+            (get ?reportsToExtractedPosition :agencycode)
+            (get ?reportsToExtractedPosition :unitcode)
+            (get ?reportsToExtractedPosition :classcode)
+            (get ?reportsToExtractedPosition :serialnumber)
+            (get ?reportsToExtractedPosition :unique-flag)
+            (get ?reportsToExtractedPosition :time-base)
+            (get ?reportsToExtractedPosition :tb-adjustment)
+            (get ?reportsToExtractedPosition :region)
+            (get ?reportsToExtractedPosition :direct-subordinates)
+            (get ?reportsToExtractedPosition :total-subordinates)
+            (get ?reportsToExtractedPosition :part-time)
+            ?fileName
+            ?page))
   )
 
 
@@ -273,14 +307,14 @@
                   nil ;; duplicate position
                   ?path
                   ?name
-                  "Orgchart specified in the PDF that does not exist in the xlsx document"
+                  "Orgchart position specified in the PDF that does not exist in the xlsx document"
                   ))
   )
 
 
 (defrule detect-org-chart-position-duplicates
   "Detect when multiple positions are mapped to an org chart with the same position number"
-  [?matchingRows <- (accum/distinct :row-num) :from [MatchingPosition (= ?page page) (= ?name file-name) (= ?position position)]]
+  [?matchingRows <- (accum/distinct :position) :from [MatchingPosition (= ?page page) (= ?name file-name) (= ?position position)]]
   [:test (> (count ?matchingRows) 1)]
   [OrgChartPageResult (= ?page page) (= ?path file-path) (= ?name file-name) (= ?description description)]
   =>
@@ -309,11 +343,6 @@
   [?numberOfParticipatingOrgCharts <- (accum/count) :from [OrgChartPosition (not= ?page page) (= ?name file-name) (= ?reportsToPosition position) () ] ]
   [:test (= ?numberOfParticipatingOrgCharts 0)]
   =>
-  ;; (tap> {
-  ;;        :page ?page
-  ;;        :name ?name
-  ;;        :description (str "XLSX specified a position not captured in this ORG chart:  " ?position " reports to " ?reportsToPosition)
-  ;; })
   (insert! (->OrgChartError
                   ?page
                   ?reportsToPosition

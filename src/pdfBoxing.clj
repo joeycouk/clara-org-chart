@@ -5,8 +5,26 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]))
 
-;; Regex for position codes of form ###-###-####-### (3-3-4-3 digits with hyphens)
-(def ^:private position-code-regex #"\b\d{3}-\d{3}-\d{4}-\d{3}\b")
+;; Regex for position codes - matches regular, vacant, and X-pattern position formats
+;; Regular: 542-061-1031-003 or 542-061-1031-003-XXX (requires 4 segments minimum)
+;; Vacant with slash: 541-064-5157/5393-709 (indicates position could be multiple codes but is vacant)
+;; Vacant with X: 541-022-4179-7XX (X represents variable digits in vacant positions)
+;; The part after / appears to be a partial code: ####-### format
+;; Note: Position codes MUST have 4 segments (###-###-####-###) - 3 segments like 541-031-5157 are not valid
+(def ^:private position-code-regex #"\d{3}-\d{3}-\d{4}-[0-9X]+(?:-[0-9X]+)*(?:/\d{4}-\d{3}(?:-[0-9X]+)*)*")
+
+(defn- clean-position-code
+  "Extract just the position code part from a match that may include surrounding text.
+  Handles regular cases like '542-061-1031-003Staff' -> '542-061-1031-003'
+  vacant position cases like '541-064-5157/5393-709Text' -> '541-064-5157/5393-709'
+  and X-pattern cases like '541-022-4179-7XXStaff' -> '541-022-4179-7XX'
+  Note: Only matches valid 4-segment position codes (###-###-####-###)"
+  [match-text]
+  (when match-text
+    ;; Try to match vacant position format first (with slash) - requires 4 segments before slash
+    (or (re-find #"\d{3}-\d{3}-\d{4}-[0-9X]+(?:-[0-9X]+)*/\d{4}-\d{3}(?:-[0-9X]+)*" match-text)
+        ;; Fall back to regular position format (including X patterns) - requires 4 segments
+        (re-find #"\d{3}-\d{3}-\d{4}-[0-9X]+(?:-[0-9X]+)*" match-text))))
 
 
 (defn extract-pages-pdfbox
@@ -26,7 +44,9 @@
   Returns a vector of maps with :text (position code), :x, :y, :width, :height.
   Returns ALL distinct instances - duplicates with identical coordinates are removed."
   [pdf-path page-number & {:keys [debug?] :or {debug? false}}]
+  (when debug? (println "DEBUG: Starting positions-with-coordinates-on-page for page" page-number))
   (with-open [doc (PDDocument/load (io/file pdf-path))]
+    (when debug? (println "DEBUG: PDF loaded successfully, total pages:" (.getNumberOfPages doc)))
     (let [position-codes (atom [])
           text-positions (atom [])
           full-text (atom "")
@@ -49,7 +69,9 @@
       
       (.setStartPage stripper page-number)
       (.setEndPage stripper page-number)
+      (when debug? (println "DEBUG: About to extract text from page" page-number))
       (.getText stripper doc)
+      (when debug? (println "DEBUG: Text extraction completed"))
       
       ;; After all text is processed, find position codes and their coordinates
       (let [final-text @full-text
@@ -60,13 +82,16 @@
           (println "Total character positions:" (count all-positions)))
         
         ;; Find all position code matches in the final text
-        (let [matches (re-seq #"\d{3}-\d{3}-\d{4}-\d{3}" final-text)]
+        (let [matches (re-seq position-code-regex final-text)]
           (when debug?
-            (println "Found position code matches:" matches))
+            (println "Found position code matches:" matches)
+            (println "First 500 chars of extracted text:")
+            (println (subs final-text 0 (min 500 (count final-text)))))
           
           ;; For each match, find its location and extract coordinates
-          (doseq [match matches]
-            (let [match-pattern (re-pattern (java.util.regex.Pattern/quote match))
+          (doseq [raw-match matches]
+            (let [clean-match (clean-position-code raw-match)
+                  match-pattern (re-pattern (java.util.regex.Pattern/quote raw-match))
                   matcher (re-matcher match-pattern final-text)]
               
               ;; Find all occurrences of this position code
@@ -79,11 +104,11 @@
                                                   all-positions)]
                     
                     (when debug?
-                      (println "Match" match "at indices" start-idx "to" end-idx
+                      (println "Match" raw-match "-> clean:" clean-match "at indices" start-idx "to" end-idx
                               "with" (count relevant-positions) "character positions"))
                     
-                    (when (= (count relevant-positions) (count match))
-                      ;; Calculate bounding box
+                    (when (= (count relevant-positions) (count raw-match))
+                      ;; Calculate bounding box - use clean match for the result
                       (let [xs (map :x relevant-positions)
                             ys (map :y relevant-positions)
                             widths (map :width relevant-positions)
@@ -92,7 +117,7 @@
                             max-x (apply max (map + xs widths))
                             min-y (apply min ys)
                             max-y (apply max (map + ys heights))
-                            coord-data {:text match
+                            coord-data {:text (or clean-match raw-match)  ; Prefer clean match
                                        :x min-x
                                        :y min-y
                                        :width (- max-x min-x)
@@ -100,7 +125,7 @@
                         
                         (swap! position-codes conj coord-data)
                         (when debug?
-                          (println "Added coordinates for" match ":" coord-data))))
+                          (println "Added coordinates for" (or clean-match raw-match) ":" coord-data))))
                     
                     (recur (conj found-positions [start-idx end-idx])))
                   
@@ -231,8 +256,11 @@
   ;; (find-positions-in-pdf "Southern Region Org Charts 01.01.25.pdf")
   ;; (find-positions-in-pdf "Southern Region Org Charts 01.01.25.pdf" ["542-434-1083-901" "541-314-1402-601"]) 
   
-  ;; Test coordinate extraction
-  (tap> (positions-with-coordinates-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3 :debug? true))
+  ;; Test coordinate extraction - updated regex with alphanumeric extensions
+  (tap> (re-seq position-code-regex "Test string 542-061-1039-904-005 and 541-028-4800-016 and 542-061-1039-904-XXX"))
+  (tap> (debug-page "resources/Sac HQ Org Charts 01.01.25.pdf" 60))
+  (tap> (positions-on-page "resources/Sac HQ Org Charts 01.01.25.pdf" 60))
+  (tap> (positions-with-coordinates-on-page "resources/Sac HQ Org Charts 01.01.25.pdf" 60 :debug? true)) 
   (tap> (positions-with-coordinates-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3))
   
   ;; Compare with simple text extraction
