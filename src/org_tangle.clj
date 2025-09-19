@@ -44,6 +44,7 @@
   (let [node-id (position->node-id (:position position))
         employee-name (format-employee-name (:current-employee position))
         title (:title position)
+        info (:info position)
         position-code (:position position)
         
         ;; Create improved label with employee, position, and title
@@ -75,8 +76,8 @@
                     ;;  (str/includes? (str/upper-case (or title "")) "CHIEF")
                     ;;  {:fillcolor "lightgreen" :fontweight "bold"}
                      
-                    ;;  (str/includes? (str/upper-case (or title "")) "DEPUTY")
-                    ;;  {:fillcolor "lightyellow"}
+                     (= info "Supervisor Not on PDF")
+                     {:fillcolor "lightyellow"}
                      
                     ;;  (str/includes? (str/upper-case (or title "")) "ASSISTANT")
                     ;;  {:fillcolor "lightcyan"}
@@ -212,15 +213,13 @@
   "Create a node representation for an org chart error"
   [error]
   (let [error-id (str "error_" (hash error))
-        missing-pos (:missing-position-code error)
-        extra-pos (:extra-position-code error)
+        position-codes (:positionCodes error)  ; Now using the vector of position codes
         page (:page error)
         description (:description error)
         
         ;; Create error label with more prominent styling
         label-parts (cond-> []
-                      missing-pos (conj (str "Missing: " missing-pos))
-                      extra-pos (conj (str "Extra: " extra-pos))
+                      (seq position-codes) (conj (str "Positions: " (str/join ", " position-codes)))
                       description (conj description)
                       page (conj (str "Page: " page)))
         
@@ -271,12 +270,13 @@
                                                 ["error_anchor_bottom" error-id {:style "invis" :constraint "true" :weight 100}])]
                           (concat root-to-top anchor-chain bottom-to-errors)))
         
-        ;; Visible edges from errors to related positions (only for extra positions that exist)
+        ;; Visible edges from errors to related positions for all position codes in the vector
         relation-edges (for [error errors
                             :let [error-id (str "error_" (hash error))
-                                  extra-pos (:extra-position-code error)]
-                            :when (and extra-pos (get position-id-map extra-pos))
-                            :let [target-id (get position-id-map extra-pos)]]
+                                  position-codes (:positionCodes error)]
+                            position-code position-codes
+                            :when (and position-code (get position-id-map position-code))
+                            :let [target-id (get position-id-map position-code)]]
                         [error-id target-id {:color "red" :style "dashed" :arrowhead "diamond" :constraint "false" :weight 1}])]
     (concat ranking-edges relation-edges)))
 
@@ -773,5 +773,79 @@
   ;; Generate DOT for manual editing
   (def dot-output (generate-org-chart-dot positions))
   (spit "org-chart.dot" dot-output)
+  
+  :rcf)
+
+;; Helper functions for working with OrgChartError records
+
+(defn find-errors-for-position
+  "Find all OrgChartError records that contain the given position code in their positionCodes vector"
+  [errors position-code]
+  (filter #(and (:positionCodes %)
+                (some #{position-code} (:positionCodes %))) 
+          errors))
+
+(defn create-position-to-errors-map
+  "Create a map from position codes to their associated OrgChartError records"
+  [errors]
+  (reduce (fn [acc error]
+            (if-let [position-codes (:positionCodes error)]
+              (reduce (fn [acc2 pos-code]
+                        (update acc2 pos-code (fnil conj []) error))
+                      acc
+                      position-codes)
+              acc))
+          {}
+          errors))
+
+(defn map-positions-to-errors
+  "Map each position to its associated errors, returning a sequence of [position error] pairs"
+  [positions errors]
+  (let [error-map (create-position-to-errors-map errors)]
+    (for [position positions
+          :let [position-code (:position position)
+                related-errors (get error-map position-code)]
+          :when (seq related-errors)
+          error related-errors]
+      [position error])))
+
+;; Example usage with the new OrgChartError structure:
+(comment
+  ;; Load your data
+  (def positions (pos/extract-positions (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx")))
+  (def errors [;; Example OrgChartError with multiple position codes
+               {:page 1 
+                :positionCodes ["123-456-789" "987-654-321"] 
+                :path "some/path" 
+                :file-name "org-chart.pdf" 
+                :description "Multiple positions with issues"}
+               {:page 2 
+                :positionCodes ["555-444-333"] 
+                :path "some/path" 
+                :file-name "org-chart.pdf" 
+                :description "Single position error"}])
+  
+  ;; Find all errors for a specific position
+  (find-errors-for-position errors "123-456-789")
+  ;; => Returns errors that contain "123-456-789" in their positionCodes vector
+  
+  ;; Create a map from position codes to their errors
+  (create-position-to-errors-map errors)
+  ;; => {"123-456-789" [error1], "987-654-321" [error1], "555-444-333" [error2]}
+  
+  ;; Map positions to their errors (returns [position error] pairs)
+  (map-positions-to-errors positions errors)
+  ;; => Sequence of [position-record error-record] for positions that have errors
+  
+  ;; Save an org chart with the new error visualization
+  (save-org-chart positions "org-chart-with-errors.png" 
+                  :errors errors 
+                  :format "png")
+  ;; => Creates visualization where error nodes connect to ALL positions in their positionCodes vector
+  
+  ;; The error nodes will now:
+  ;; 1. Show "Positions: code1, code2, ..." in their labels
+  ;; 2. Have red dashed lines connecting to each position in the positionCodes vector
+  ;; 3. Be positioned at the bottom of the chart for visibility
   
   :rcf)

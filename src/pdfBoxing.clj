@@ -8,23 +8,23 @@
 ;; Regex for position codes - matches regular, vacant, and X-pattern position formats
 ;; Regular: 542-061-1031-003 or 542-061-1031-003-XXX (requires 4 segments minimum)
 ;; Vacant with slash: 541-064-5157/5393-709 (indicates position could be multiple codes but is vacant)
-;; Vacant with X: 541-022-4179-7XX (X represents variable digits in vacant positions)
+;; Vacant with X: 541-022-4179-7XX or 541-022-4179-7xx (X/x represents variable digits in vacant positions)
 ;; The part after / appears to be a partial code: ####-### format
 ;; Note: Position codes MUST have 4 segments (###-###-####-###) - 3 segments like 541-031-5157 are not valid
-(def ^:private position-code-regex #"\d{3}-\d{3}-\d{4}-[0-9X]+(?:-[0-9X]+)*(?:/\d{4}-\d{3}(?:-[0-9X]+)*)*")
+(def ^:private position-code-regex #"\d{3}-\d{3}-\d{4}-[0-9Xx]+(?:-[0-9Xx]+)*(?:/\d{4}-\d{3}(?:-[0-9Xx]+)*)*")
 
 (defn- clean-position-code
   "Extract just the position code part from a match that may include surrounding text.
   Handles regular cases like '542-061-1031-003Staff' -> '542-061-1031-003'
   vacant position cases like '541-064-5157/5393-709Text' -> '541-064-5157/5393-709'
-  and X-pattern cases like '541-022-4179-7XXStaff' -> '541-022-4179-7XX'
+  and X-pattern cases like '541-022-4179-7XXStaff' -> '541-022-4179-7XX' or '542-740-1042-xxx' -> '542-740-1042-xxx'
   Note: Only matches valid 4-segment position codes (###-###-####-###)"
   [match-text]
   (when match-text
     ;; Try to match vacant position format first (with slash) - requires 4 segments before slash
-    (or (re-find #"\d{3}-\d{3}-\d{4}-[0-9X]+(?:-[0-9X]+)*/\d{4}-\d{3}(?:-[0-9X]+)*" match-text)
-        ;; Fall back to regular position format (including X patterns) - requires 4 segments
-        (re-find #"\d{3}-\d{3}-\d{4}-[0-9X]+(?:-[0-9X]+)*" match-text))))
+    (or (re-find #"\d{3}-\d{3}-\d{4}-[0-9Xx]+(?:-[0-9Xx]+)*/\d{4}-\d{3}(?:-[0-9Xx]+)*" match-text)
+        ;; Fall back to regular position format (including X/x patterns) - requires 4 segments
+        (re-find #"\d{3}-\d{3}-\d{4}-[0-9Xx]+(?:-[0-9Xx]+)*" match-text))))
 
 
 (defn extract-pages-pdfbox
@@ -258,6 +258,7 @@
   
   ;; Test coordinate extraction - updated regex with alphanumeric extensions
   (tap> (re-seq position-code-regex "Test string 542-061-1039-904-005 and 541-028-4800-016 and 542-061-1039-904-XXX"))
+  (tap> (re-seq position-code-regex "Test lowercase x: 542-740-1042-xxx and uppercase X: 542-740-1042-XXX"))
   (tap> (debug-page "resources/Sac HQ Org Charts 01.01.25.pdf" 60))
   (tap> (positions-on-page "resources/Sac HQ Org Charts 01.01.25.pdf" 60))
   (tap> (positions-with-coordinates-on-page "resources/Sac HQ Org Charts 01.01.25.pdf" 60 :debug? true)) 
@@ -265,7 +266,7 @@
   
   ;; Compare with simple text extraction
   (let [simple (positions-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3)
-        with-coords (positions-with-coordinates-on-page "resources/Southern Region Org Charts 01.01.25.pdf" 3)]
+        with-coords (positions-with-coordinates-on-page "resources/Sac HQ Org Charts 01.01.25.pdf" 43)]
      (tap> with-coords)
     (println "Simple extraction found:" (count simple) "position codes")
     (println "Coordinate extraction found:" (count with-coords) "position codes")
