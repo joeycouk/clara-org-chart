@@ -3,10 +3,7 @@
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
 
         ;; Clara Rules - use latest stable version
-        com.cerner/clara-rules {:mvn/version "0.21.0"}
-
-        ;; We'll implement EAV ourselves rather than depend on external library
-        clyfe/clara-eav {:mvn/version "0.1.9"}
+        com.cerner/clara-rules {:mvn/version "0.21.1"}
 
         ;; XLSX Processing
         org.apache.poi/poi {:mvn/version "5.4.1"}

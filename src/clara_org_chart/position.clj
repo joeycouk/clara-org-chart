@@ -48,7 +48,7 @@
 
 (defn extract-positions [xlsx-data]
   (let [sheet (->> (:sheets xlsx-data)
-                   (filter #(= (:sheet-name %) "ALL REGIONS"))
+                   (filter #(= (:sheet-name %) "CNR_MOC01"))
                    first)
         cells (:cells sheet)
         ;; Get headers with their column positions
@@ -82,10 +82,10 @@
                     :comments-notes (get row-map "Comments/Notes")
                     :dotted-reports (get row-map "Dotted_Reports")
                     :agencycode (get row-map "AgencyCode")
-                    :unitcode (get row-map "UnitCode")
-                    :classcode (get row-map "ClassCode")
-                    :serialnumber (get row-map "SerialNumber")
-                    :unique-flag (get row-map "Unique_Flag")
+                    :unitcode (get row-map "UNIT")
+                    :classcode (get row-map "CLASS")
+                    :serialnumber (get row-map "SERIAL")
+                    ;; :unique-flag (get row-map "Unique_Flag")
                     :time-base (get row-map "Time_Base")
                     :tb-adjustment (get row-map "TB_Adjustment")
                     :region (get row-map "Region")
@@ -178,49 +178,54 @@
           
           ;; Continue processing
           :else
-          (let [current (first to-process)
-                remaining (disj to-process current)
-                direct-reports (get reports-map current [])
-                subordinate-ids (map :position direct-reports)
-                
-                ;; Check if all subordinates have been processed
-                all-subordinates-ready? (every? #(contains? processed %) subordinate-ids)]
+          ;; Process ALL ready positions in this iteration instead of just one
+          (let [ready-positions (filter (fn [pos-id]
+                                          (let [direct-reports (get reports-map pos-id [])
+                                                subordinate-ids (map :position direct-reports)]
+                                            (every? #(contains? processed %) subordinate-ids)))
+                                        to-process)]
             
-            (if all-subordinates-ready?
-              ;; Calculate count for current position
-              (let [direct-count (count direct-reports)
-                    indirect-count (reduce + 0 (map #(get counts % 0) subordinate-ids))
-                    total-count (+ direct-count indirect-count)
+            (if (empty? ready-positions)
+              ;; No positions are ready - this shouldn't happen in a valid hierarchy
+              ;; Process the first one anyway with partial data to prevent infinite loops
+              (let [current (first to-process)
+                    remaining (disj to-process current)
+                    direct-reports (get reports-map current [])
+                    subordinate-ids (map :position direct-reports)
+                    direct-count (count direct-reports)
+                    partial-indirect (reduce + 0 (keep #(get counts %) subordinate-ids))
+                    total-count (+ direct-count partial-indirect)
                     new-counts (assoc counts current total-count)
-                    new-processed (conj processed current)
-                    
-                    ;; Find supervisor and add to processing queue
-                    supervisor-pos (get position-map current)
-                    supervisor-id (:reports-to-position supervisor-pos)
-                    
-                    ;; Add supervisor to queue with safety checks
-                    next-to-process (if (and supervisor-id 
-                                            (contains? all-position-ids supervisor-id)
-                                            (not (contains? new-processed supervisor-id))
-                                            (not (contains? remaining supervisor-id))
-                                            (not= supervisor-id current)) ; Prevent self-reference
-                                     (conj remaining supervisor-id)
-                                     remaining)]
-                
-                (recur new-processed new-counts next-to-process (inc iterations) max-iterations))
+                    new-processed (conj processed current)]
+                (recur new-processed new-counts remaining (inc iterations) max-iterations))
               
-              ;; Current position can't be processed yet
-              ;; If we've tried many times, process anyway with partial data (quietly)
-              (if (> iterations (count valid-positions))
-                (let [direct-count (count direct-reports)
-                      partial-indirect (reduce + 0 (keep #(get counts %) subordinate-ids))
-                      total-count (+ direct-count partial-indirect)
-                      new-counts (assoc counts current total-count)
-                      new-processed (conj processed current)]
-                  ;; Don't print individual warnings - just process silently
-                  (recur new-processed new-counts remaining (inc iterations) max-iterations))
-                ;; Normal case: move to end of queue
-                (recur processed counts (conj remaining current) (inc iterations) max-iterations)))))))))
+              ;; Process all ready positions
+              (let [new-counts (reduce (fn [counts-acc pos-id]
+                                         (let [direct-reports (get reports-map pos-id [])
+                                               subordinate-ids (map :position direct-reports)
+                                               direct-count (count direct-reports)
+                                               indirect-count (reduce + 0 (map #(get counts-acc % 0) subordinate-ids))
+                                               total-count (+ direct-count indirect-count)]
+                                           (assoc counts-acc pos-id total-count)))
+                                       counts ready-positions)
+                    new-processed (into processed ready-positions)
+                    
+                    ;; Add supervisors to queue
+                    supervisors-to-add (reduce (fn [acc pos-id]
+                                                 (let [supervisor-pos (get position-map pos-id)
+                                                       supervisor-id (:reports-to-position supervisor-pos)]
+                                                   (if (and supervisor-id 
+                                                           (contains? all-position-ids supervisor-id)
+                                                           (not (contains? new-processed supervisor-id))
+                                                           (not (contains? acc supervisor-id))
+                                                           (not= supervisor-id pos-id))
+                                                     (conj acc supervisor-id)
+                                                     acc)))
+                                               #{} ready-positions)
+                    remaining-positions (apply disj to-process ready-positions)
+                    next-to-process (into remaining-positions supervisors-to-add)]
+                
+                (recur new-processed new-counts next-to-process (inc iterations) max-iterations)))))))))
 
 (defn add-subordinate-counts
   "Add subordinate counts to position records using optimized bottom-up calculation.

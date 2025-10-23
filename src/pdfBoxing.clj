@@ -11,7 +11,7 @@
 ;; Vacant with X: 541-022-4179-7XX or 541-022-4179-7xx (X/x represents variable digits in vacant positions)
 ;; The part after / appears to be a partial code: ####-### format
 ;; Note: Position codes MUST have 4 segments (###-###-####-###) - 3 segments like 541-031-5157 are not valid
-(def ^:private position-code-regex #"\d{3}-\d{3}-\d{4}-[0-9Xx]+(?:-[0-9Xx]+)*(?:/\d{4}-\d{3}(?:-[0-9Xx]+)*)*")
+(def ^:private position-code-regex #"\d{3}-\d{3}-\d{4}-[0-9Xx]{3}(?:-[0-9Xx]{3})*(?:/\d{4}-\d{3}(?:-[0-9Xx]{3})*)*")
 
 (defn- clean-position-code
   "Extract just the position code part from a match that may include surrounding text.
@@ -22,9 +22,9 @@
   [match-text]
   (when match-text
     ;; Try to match vacant position format first (with slash) - requires 4 segments before slash
-    (or (re-find #"\d{3}-\d{3}-\d{4}-[0-9Xx]+(?:-[0-9Xx]+)*/\d{4}-\d{3}(?:-[0-9Xx]+)*" match-text)
+    (or (re-find #"\d{3}-\d{3}-\d{4}-[0-9Xx]{3}(?:-[0-9Xx]{3})*/\d{4}-\d{3}(?:-[0-9Xx]{3})*" match-text)
         ;; Fall back to regular position format (including X/x patterns) - requires 4 segments
-        (re-find #"\d{3}-\d{3}-\d{4}-[0-9Xx]+(?:-[0-9Xx]+)*" match-text))))
+        (re-find #"\d{3}-\d{3}-\d{4}-[0-9Xx]{3}(?:-[0-9Xx]{3})*" match-text))))
 
 
 (defn extract-pages-pdfbox

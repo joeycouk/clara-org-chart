@@ -24,6 +24,6 @@
     ;;   (xlsx-jvm/extract-data (xlsx-jvm/create-file-buffer "test/sample_data.xlsx"))
   
   
-    (extract-data "test/sample_data.xlsx")
+    (extract-data "resources/CAL FIRE Data Dictionary.xlsx")
   
     :rcf)

@@ -1,3 +1,4 @@
+
 (ns clara-org-chart.rules
   (:require
    [clara-org-chart.xlsx :as xlsx]
@@ -5,6 +6,7 @@
    [clara-org-chart.position :as pos]
    [pdfBoxing :as pdf]
    [clara.rules :refer [defrule defquery insert! insert-all! insert-unconditional! defsession insert-all fire-rules query]]
+   [clara.tools.inspect :as inspect]
    [clara.rules.accumulators :as accum]
    [clara-org-chart.org-chart-extractor :as extractor]
    [clojure.string :as str]
@@ -45,13 +47,42 @@
             unitcode
             classcode
             serialnumber
-            unique-flag
+            ;; unique-flag
             time-base
             tb-adjustment
             region
             direct-subordinates
             total-subordinates
             part-time
+            temporary
+            file-name
+            page
+            info])
+
+
+(defrecord TemporaryPositionMatchingPosition
+           [row-num
+            position
+            title
+            class-title
+            current-employee
+            reports-to-position
+            dotted-line-reports-to-position
+            city
+            comments-notes
+            dotted-reports
+            agencycode
+            unitcode
+            classcode
+            serialnumber
+            ;; unique-flag
+            time-base
+            tb-adjustment
+            region
+            direct-subordinates
+            total-subordinates
+            part-time
+            temporary
             file-name
             page
             info])
@@ -73,16 +104,19 @@
             unitcode
             classcode
             serialnumber
-            unique-flag
+            ;; unique-flag
             time-base
             tb-adjustment
             region
             direct-subordinates
             total-subordinates
             part-time
+            temporary
             file-name
             page
-            info])
+            info
+            
+            ])
 
 
 
@@ -114,13 +148,15 @@
             unitcode
             classcode
             serialnumber
-            unique-flag
+            ;; unique-flag
             time-base
             tb-adjustment
             region
             direct-subordinates
             total-subordinates
-            part-time])
+            part-time
+            temporary
+            ])
 
 
 
@@ -142,6 +178,20 @@
                                str/trim)]
       {:position cleaned-position
        :part-time part-time?})))
+
+
+(defn ends-with-9xx?
+  "Return true if the last or second-to-last 3-digit section of a string starts with '9'.
+  Handles cases like '542-720-1060-910' => true, '542-720-1041-906-002' => true, '542-720-1060-001' => false."
+  [s]
+  (when (string? s)
+    (let [matches (re-seq #"\d{3,4}" s)
+          serial-num (nth matches 3 "")
+          ]
+      (cond
+        (nil? serial-num) false
+        (str/starts-with? serial-num "9") true
+  :else false))))
 
 
 (defn extract-four-digit-section  
@@ -169,13 +219,14 @@
            :unitcode (:unitcode record)
            :classcode (:classcode record)
            :serialnumber (:serialnumber record)
-           :unique-flag (:unique-flag record)
+          ;;  :unique-flag (:unique-flag record)
            :time-base (:time-base record)
            :tb-adjustment (:tb-adjustment record)
            :region (:region record)
            :direct-subordinates (:direct-subordinates record)
            :total-subordinates (:total-subordinates record)
            :part-time (:part-time record)
+           :temporary (:temporary record)
            :file-name (:file-name record)
            :page (:page record)
            :info (:info record)}))
@@ -192,7 +243,9 @@
 
     (let [position-info (parse-position-with-time-base (get ?pos :position))
           cleaned-position (:position position-info)
-          part-time? (:part-time position-info)]
+          part-time? (:part-time position-info)
+          temporary? (ends-with-9xx? ?posNum)
+          ]
       (insert! (->ExtractedPosition
                 (get ?pos :row-num)
                 cleaned-position
@@ -207,13 +260,14 @@
                 (get ?pos :unitcode)
                 (get ?pos :classcode)
                 (get ?pos :serialnumber)
-                (get ?pos :unique-flag)
+                ;; (get ?pos :unique-flag)
                 (get ?pos :time-base)
                 (get ?pos :tb-adjustment)
                 (get ?pos :region)
                 (or ?subs 0)
-                0
+                (get ?pos :total-subordinates)
                 part-time?
+                temporary?
                 ;;  (+ ?subs (or ?subSubs 0))
                 ))))
 
@@ -233,18 +287,100 @@
                 (:height pos-record)  ; Height
                 ))))
 
+  
+
+ (defrule find-matching-temporary-position-numbers-and-xlsx-positions
+   "For temporary positions only - add the Matching Position number only when they report to somebody directly within the org chart"
+    [OrgChartPosition (= ?page page) (= ?position position) (= ?fileName file-name)]
+    [?extractedPosition <- ExtractedPosition (= ?position position) (= ?reportsToPosition reports-to-position)]
+    [:test (= (get ?extractedPosition :temporary) true)]
+    [:test (not-empty ?reportsToPosition)]
+   [MatchingPosition (= ?page page) (= ?reportsToPosition position) (= ?fileName file-name)] 
+   [ClassificationCode (= (extract-four-digit-section ?position) class-code) (= ?classTitle class-title)]
+   =>
+    (insert-unconditional! (->TemporaryPositionMatchingPosition
+                           (get ?extractedPosition :row-num)
+                           (get ?extractedPosition :position)
+                           (get ?extractedPosition :title)
+                           ?classTitle
+                           (get ?extractedPosition :current-employee)
+                           (get ?extractedPosition :reports-to-position)
+                           (get ?extractedPosition :dotted-line-reports-to-position)
+                           (get ?extractedPosition :city)
+                           (get ?extractedPosition :comments-notes)
+                           (get ?extractedPosition :dotted-reports)
+                           (get ?extractedPosition :agencycode)
+                           (get ?extractedPosition :unitcode)
+                           (get ?extractedPosition :classcode)
+                           (get ?extractedPosition :serialnumber)
+                          ;;  (get ?extractedPosition :unique-flag)
+                           (get ?extractedPosition :time-base)
+                           (get ?extractedPosition :tb-adjustment)
+                           (get ?extractedPosition :region)
+                           (get ?extractedPosition :direct-subordinates)
+                           (get ?extractedPosition :total-subordinates)
+                           (get ?extractedPosition :part-time)
+                           (get ?extractedPosition :temporary)
+                           ?fileName
+                           ?page
+                           ""))
+   
+   )
+
+  
+
+ (defrule find-matching-temporary-position-numbers-and-xlsx-positions-no-class-code
+   "For temporary positions only - add the Matching Position number only when they report to somebody directly within the org chart"
+   [OrgChartPosition (= ?page page) (= ?position position) (= ?fileName file-name)]
+   [?extractedPosition <- ExtractedPosition (= ?position position) (= ?reportsToPosition reports-to-position)]
+   [:test (= (get ?extractedPosition :temporary) true)]
+   [:test (not-empty ?reportsToPosition)]
+   [MatchingPosition (= ?page page) (= ?reportsToPosition position) (= ?fileName file-name)]
+   [:not [ClassificationCode (= (extract-four-digit-section ?position) class-code)]]
+   =>
+   (insert-unconditional! (->TemporaryPositionMatchingPosition
+                           (get ?extractedPosition :row-num)
+                           (get ?extractedPosition :position)
+                           (get ?extractedPosition :title)
+                           "Unknown"
+                           (get ?extractedPosition :current-employee)
+                           (get ?extractedPosition :reports-to-position)
+                           (get ?extractedPosition :dotted-line-reports-to-position)
+                           (get ?extractedPosition :city)
+                           (get ?extractedPosition :comments-notes)
+                           (get ?extractedPosition :dotted-reports)
+                           (get ?extractedPosition :agencycode)
+                           (get ?extractedPosition :unitcode)
+                           (get ?extractedPosition :classcode)
+                           (get ?extractedPosition :serialnumber)
+                          ;;  (get ?extractedPosition :unique-flag)
+                           (get ?extractedPosition :time-base)
+                           (get ?extractedPosition :tb-adjustment)
+                           (get ?extractedPosition :region)
+                           (get ?extractedPosition :direct-subordinates)
+                           (get ?extractedPosition :total-subordinates)
+                           (get ?extractedPosition :part-time)
+                           (get ?extractedPosition :temporary)
+                           ?fileName
+                           ?page
+                           "")))
+
+
+
 
   (defrule find-matching-org-chart-position-numbers-and-xlsx-positions
     "Where the position numbers match perfectly, generate an instance of MatchingPosition"
     [OrgChartPosition (= ?page page) (= ?position position) (= ?fileName file-name)]
-    [?matchingClassIficaiton <- ClassificationCode (= (extract-four-digit-section ?position) class-code)]
+    [ClassificationCode (= (extract-four-digit-section ?position) class-code) (= ?classTitle class-title)]
     [?extractedPosition <- ExtractedPosition (= ?position position)]
+    ;; Not mapping in temporary positions in this function because there could be dupolicate position codes
+    [:test (not= (get ?extractedPosition :temporary) true)]
     =>
     (insert! (->MatchingPosition
               (get ?extractedPosition :row-num)
               (get ?extractedPosition :position)
               (get ?extractedPosition :title)
-              (or (get ?matchingClassIficaiton :class-title) "")
+              ?classTitle
               (get ?extractedPosition :current-employee)
               (get ?extractedPosition :reports-to-position)
               (get ?extractedPosition :dotted-line-reports-to-position)
@@ -255,18 +391,64 @@
               (get ?extractedPosition :unitcode)
               (get ?extractedPosition :classcode)
               (get ?extractedPosition :serialnumber)
-              (get ?extractedPosition :unique-flag)
+              ;; (get ?extractedPosition :unique-flag)
               (get ?extractedPosition :time-base)
               (get ?extractedPosition :tb-adjustment)
               (get ?extractedPosition :region)
               (get ?extractedPosition :direct-subordinates)
               (get ?extractedPosition :total-subordinates)
               (get ?extractedPosition :part-time)
+              (get ?extractedPosition :temporary)
               ?fileName
               ?page
-              ""))
-              
-              )
+              "")))
+
+  
+
+  (defrule find-matching-org-chart-position-numbers-and-xlsx-positions-no-matching-class-code
+  "Where the position numbers match perfectly, generate an instance of MatchingPosition with no matching classification code known"
+  [OrgChartPosition (= ?page page) (= ?position position) (= ?fileName file-name)]
+  [:not [ClassificationCode (= (extract-four-digit-section ?position) class-code)]]
+  [?extractedPosition <- ExtractedPosition (= ?position position)] 
+    ;; Not mapping in temporary positions in this function because there could be dupolicate position codes
+  [:test (not= (get ?extractedPosition :temporary) true)]
+  =>
+  (insert! (->MatchingPosition
+            (get ?extractedPosition :row-num)
+            (get ?extractedPosition :position)
+            (get ?extractedPosition :title)
+            "Unknown"
+            (get ?extractedPosition :current-employee)
+            (get ?extractedPosition :reports-to-position)
+            (get ?extractedPosition :dotted-line-reports-to-position)
+            (get ?extractedPosition :city)
+            (get ?extractedPosition :comments-notes)
+            (get ?extractedPosition :dotted-reports)
+            (get ?extractedPosition :agencycode)
+            (get ?extractedPosition :unitcode)
+            (get ?extractedPosition :classcode)
+            (get ?extractedPosition :serialnumber)
+            ;; (get ?extractedPosition :unique-flag)
+            (get ?extractedPosition :time-base)
+            (get ?extractedPosition :tb-adjustment)
+            (get ?extractedPosition :region)
+            (get ?extractedPosition :direct-subordinates)
+            (get ?extractedPosition :total-subordinates)
+            (get ?extractedPosition :part-time)
+            (get ?extractedPosition :temporary)
+            ?fileName
+            ?page
+            "")))
+
+
+  
+  ;; deduplicate the temporary possitions
+  (defrule flatten-out-temporary-position-duplicates
+    "deduplicate the temporary possitions"
+    [?distinctDuplicates <- (accum/distinct) :from [TemporaryPositionMatchingPosition]]
+    =>
+    ;; (tap> (convert-to-matching-positions ?distinctDuplicates))
+    (insert-all! (convert-to-matching-positions ?distinctDuplicates)))
 
 
   ;; deduplicate the consistently missing manager positions
@@ -274,7 +456,7 @@
     "deduplicate the missing managers identified"
     [?distinctDuplicates <- (accum/distinct) :from [TempDuplicateMatchingPosition]]
     =>
-    (tap> (convert-to-matching-positions ?distinctDuplicates))
+    ;; (tap> (convert-to-matching-positions ?distinctDuplicates))
     (insert-all! (convert-to-matching-positions ?distinctDuplicates)))
 
 
@@ -282,9 +464,10 @@
   ;; New rule to identify when multiple extract positions within the same page report to a person but that person is not included yet
   (defrule find-consistently-missing-manager
     "identify when multiple extract positions within the same page report to a person but that person is not included yet"
-    [OrgChartPosition (= ?page page) (= ?position position) (= ?fileName file-name)]
-    [ClassificationCode (= (extract-four-digit-section ?position) class-code) (= ?classTitle class-title)]
+    [OrgChartPosition (= ?page page) (= ?position position) (= ?fileName file-name)] 
     [ExtractedPosition (= ?position position) (= ?reportsToPosition reports-to-position)]
+    [:test (not-empty ?reportsToPosition)]
+    [ClassificationCode (= (extract-four-digit-section ?reportsToPosition) class-code) (= ?classTitle class-title)]
     [:not [OrgChartPosition (= ?page page) (= ?reportsToPosition position) (= ?fileName file-name)]]
     [?reportsToExtractedPosition <- ExtractedPosition (= ?reportsToPosition position)]
     [?numberOfPeopleReportingToThisGuy <- (accum/count) :from [MatchingPosition (= ?page page) (= ?reportsToPosition reports-to-position) (= ?fileName file-name)]]
@@ -306,13 +489,14 @@
                             (get ?reportsToExtractedPosition :unitcode)
                             (get ?reportsToExtractedPosition :classcode)
                             (get ?reportsToExtractedPosition :serialnumber)
-                            (get ?reportsToExtractedPosition :unique-flag)
+                            ;; (get ?reportsToExtractedPosition :unique-flag)
                             (get ?reportsToExtractedPosition :time-base)
                             (get ?reportsToExtractedPosition :tb-adjustment)
                             (get ?reportsToExtractedPosition :region)
                             (get ?reportsToExtractedPosition :direct-subordinates)
                             (get ?reportsToExtractedPosition :total-subordinates)
                             (get ?reportsToExtractedPosition :part-time)
+                            (get ?reportsToExtractedPosition :temporary)
                             ?fileName
                             ?page
                             "Supervisor Not on PDF")))
@@ -335,20 +519,20 @@
               "Orgchart position specified in the PDF that does not exist in the xlsx document")))
 
 
-  (defrule identify-invalid-subordinate
-    "Detect when a person is a subordinate of an invalid person based on title"
-    [MatchingPosition (= ?position position) (= ?reportsToPosition reports-to-position) (= ?title title) (= ?fileName file-name) (= ?page page)]
-    [:test (not-empty ?reportsToPosition)]
-    [MatchingPosition (= ?fileName file-name) (= ?page page) (= ?titleSup title) (= ?reportsToPosition position)]
-    [:test (not (th/can-report-to? ?title ?titleSup))]
-    =>
-    ;; (tap> {:title "identify-invalid-subordinate" :page ?page :positions  (vector ?position ?reportsToPosition) :name ?fileName})
-    (insert! (->OrgChartError
-              ?page
-              (vector ?position ?reportsToPosition)
-              ""
-              ?fileName
-              (str "Invalid Supervisor detected for " ?position " and " ?reportsToPosition))))
+  ;; (defrule identify-invalid-subordinate
+  ;;   "Detect when a person is a subordinate of an invalid person based on title"
+  ;;   [MatchingPosition (= ?position position) (= ?reportsToPosition reports-to-position) (= ?title class-title) (= ?fileName file-name) (= ?page page)]
+  ;;   [:test (not-empty ?reportsToPosition)]
+  ;;   [MatchingPosition (= ?fileName file-name) (= ?page page) (= ?reportsToPosition position) (= ?titleSup class-title) ]
+  ;;   [:test (nil? (th/can-report-to? ?title ?titleSup))]
+  ;;   =>
+  ;;   ;; (tap> {:title "identify-invalid-subordinate" :page ?page :positions  (vector ?position ?reportsToPosition) :name ?fileName})
+  ;;   (insert! (->OrgChartError
+  ;;             ?page
+  ;;             (vector ?position ?reportsToPosition)
+  ;;             ""
+  ;;             ?fileName
+  ;;             (str "Invalid Supervisor detected for " ?position " " ?title " "  "and "  ?reportsToPosition " " ?titleSup))))
 
 
 
@@ -378,7 +562,7 @@
     ;; where the reports to position doesn't exist in the pdf
     [:not [OrgChartPosition (= ?page page) (= ?name file-name) (= ?reportsToPosition position)]]
     ;; now we need to check to see if this manager position is just meant to be represented on another org chart - this may just be a separation point
-    [?numberOfParticipatingOrgCharts <- (accum/count) :from [OrgChartPosition (not= ?page page) (= ?name file-name) (= ?reportsToPosition position) ()]]
+    [?numberOfParticipatingOrgCharts <- (accum/count) :from [OrgChartPosition (= file-name ?name ) (= position ?reportsToPosition)]]
     [:test (= ?numberOfParticipatingOrgCharts 0)]
     =>
     ;; (tap> {:page ?page :positions  (vector ?position ?reportsToPosition) :path ?path :name ?name})
@@ -500,17 +684,42 @@
     ;; Clara-EAV expects raw EAV records, not transformed vectors
     ;; (load-file "src/clara_org_chart/rules.clj")
 
+  (th/can-report-to? "CUSTODIAN SUPERVISOR I" "CHIEF OF PLANT OPERATION I")
+
     ;; Session is now defined above, outside the comment block  ;; INCORRECT: Explicit rule vectors don't work properly in Clara-EAV
     (defsession test-session 'clara-org-chart.rules)
+
+     (pos/extract-positions (xlsx/extract-data "resources/CNR_MOC01.xlsx" :streaming true))
+    
+(tap> (pos/extract-positions-with-counts (xlsx/extract-data "resources/CNR_MOC01.xlsx" :streaming true)))
+
 
     ;; 2. Streaming for very large files (memory efficient)
     (def results-streaming (-> test-session
                                (insert-all
                                 (concat
-                                 (pos/extract-positions (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx" :streaming true))
+                                ;;  (pos/extract-positions (xlsx/extract-data "resources/CNR_MOC01.xlsx" :streaming true))
+                                 (pos/extract-positions-with-counts (xlsx/extract-data "resources/CNR_MOC01.xlsx" :streaming true))
                                  (extractor/load-org-chart-pages-as-records "extracted-org-chart-positions.edn")
                                  (clara-org-chart.data-dictionary-extractor/extract-classification-codes (xlsx/extract-data "resources/CAL FIRE Data Dictionary.xlsx"))))
                                (fire-rules)))
+    
+    
+    
+    (tap> (get-in (inspect/inspect results-streaming) [:rule-matches detect-org-chart-missing-position]))
+
+    (tap> test-inspect)
+    (def test-inspect (inspect/inspect results-streaming))
+
+
+    
+(tap>  (inspect/explain-activations(-> test-session
+                                  (insert-all
+                                   (concat
+                                    (pos/extract-positions (xlsx/extract-data "resources/Org Chart Data Analysis.xlsx" :streaming true))
+                                    (extractor/load-org-chart-pages-as-records "extracted-org-chart-positions.edn")
+                                    (clara-org-chart.data-dictionary-extractor/extract-classification-codes (xlsx/extract-data "resources/CAL FIRE Data Dictionary.xlsx"))))
+                                  (fire-rules))))
 
     (tap> (extractor/load-org-chart-pages-as-records "extracted-org-chart-positions.edn"))
     (tap> (:?position-values (first (query results-streaming get-position-values))))
@@ -519,9 +728,11 @@
     
     (tap> (:?orgChartPageResults (first (query results-streaming get-all-org-chart-page-values))))
 
-    (tap> (query results-streaming get-class-title-from-classification-code :?classCode "1733"))
+    (tap> (query results-streaming get-class-title-from-classification-code :?classCode "1060"))
 
- (tap> (query results-streaming get-all-matched-positions))
+ (tap> (filter #(not (string? (:reports-to-position %))) (:?matchedPositions (first (query results-streaming get-all-matched-positions)))))
+
+
     (tap> (query results-streaming get-wacky-matched-positions))
     (tap> (query results-streaming get-sampling-of-supervisor-supverisee))
 
@@ -579,7 +790,7 @@
           format "svg"
           pdfDocuumentName (:file-name (first (:?orgChartPageResults (first queryResult))))
           page (:page (first (:?orgChartPageResults (first queryResult))))
-          filename (str pdfDocuumentName title " page " page "." format)]
+          filename (str pdfDocuumentName "-" title " page " page "." format)]
       (tap> {:positions positions
              :errors errors
              :title title
@@ -595,9 +806,38 @@
                                        :format format
                                        :errors errors
                                        :report-missing-positions false))
+    
 
 
 
+    (let [queryResult (query results-streaming get-all-org-chart-page-values)
+      results-with-errors (filter #(> (count (:?orgChartErrors %)) 0) queryResult)]
+      (doseq [orgChart results-with-errors]
+        (let [positions (:?orgChartPositionMatches orgChart)
+             errors (:?orgChartErrors orgChart)
+             title (:description (first (:?orgChartPageResults orgChart)))
+             format "svg"
+             pdfDocuumentName (:file-name (first (:?orgChartPageResults  orgChart)))
+             page (:page (first (:?orgChartPageResults orgChart)))
+             filename (str pdfDocuumentName "-" title " page " page "." format)]
+         (tap> {:positions positions
+               :errors errors
+               :title title
+               :format format
+               :pdfDocuumentName pdfDocuumentName
+               :page page
+               :filename filename})
+        
+        (tangle/save-org-chart-for-codes positions
+                                         []
+                                         filename
+                                         :title title
+                                         :format format
+                                         :errors errors
+                                         :report-missing-positions false))
+        ))
+
+          
 
 
     ;; (tap> (:?position-values (first (query results-streaming get-position-values))))

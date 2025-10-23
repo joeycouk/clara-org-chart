@@ -59,7 +59,23 @@
                       (and show-codes (:agencycode position)) (conj (str "Agency: " (:agencycode position)))
                       (and show-codes (:unitcode position)) (conj (str "Unit: " (:unitcode position))))
         
-        label (str/join "\\n" label-parts)
+        ;; Add subordinate count floating in absolute top-right corner - SVG compatible
+        subordinate-count (:total-subordinates position)
+        label (if (and subordinate-count (> subordinate-count 0))
+                ;; Create a floating count badge pushed to absolute extreme
+                (let [count-text (str subordinate-count)  ; Just the number
+                      ;; Push count to absolute maximum right - even wider
+                      extreme-width 50  ; Even wider to push further right
+                      ;; Calculate padding to push count to absolute edge
+                      count-padding (max 0 (- extreme-width (count count-text)))
+                      ;; Create the floating count line with absolute maximum positioning
+                      floating-count-line (str (apply str (repeat count-padding " ")) count-text)
+                      ;; No spacer - person's name immediately after count line
+                      ;; Combine: floating count, then regular content immediately below
+                      all-parts (cons floating-count-line label-parts)]
+                  (str/join "\\n" all-parts))
+                ;; Regular text label for positions with no subordinates
+                (str/join "\\n" label-parts))
         
         ;; Check management status for styling
         has-subordinates-in-org (and (:direct-subordinates position) (> (:direct-subordinates position) 0))
@@ -194,7 +210,7 @@
                      (or report-missing-positions 
                          (contains? existing-position-ids (:reports-to-position position))))]
       ;; Note: This creates edges FROM supervisor TO subordinate (downward flow)
-      [supervisor-id subordinate-id {:color "black" :arrowhead "normal"}])))
+      [supervisor-id subordinate-id {:color "black" :arrowhead "none"}])))
 
 (defn create-dotted-line-edges
   "Create dotted line edges representing matrix/dotted line relationships"
@@ -205,7 +221,7 @@
         :when (and position-id dotted-manager-id 
                    (not (str/blank? position-id))
                    (not (str/blank? dotted-manager-id)))]
-    [position-id dotted-manager-id {:style "dashed" :color "gray"}]))
+    [position-id dotted-manager-id {:style "dashed" :color "gray" :arrowhead "none"}]))
 
 
 ;; Error visualization functions
@@ -277,7 +293,7 @@
                             position-code position-codes
                             :when (and position-code (get position-id-map position-code))
                             :let [target-id (get position-id-map position-code)]]
-                        [error-id target-id {:color "red" :style "dashed" :arrowhead "diamond" :constraint "false" :weight 1}])]
+                        [error-id target-id {:color "red" :style "dashed" :arrowhead "none" :constraint "false" :weight 1}])]
     (concat ranking-edges relation-edges)))
 
 ;; Data filtering and optimization functions for large org charts
@@ -453,6 +469,7 @@
                         :penwidth 1.5}             ; FIXED border thickness
                  :edge {:fontname "Arial"
                         :fontsize 9                ; FIXED edge font size
+                        :arrowhead "none"          ; No arrow heads - plain lines
                         :arrowsize 0.8             ; FIXED arrow size
                         :penwidth 1.5}             ; FIXED edge thickness
                  :node->id :id
@@ -489,6 +506,7 @@
                         :height 1.0}              ; Minimum box height
                  :edge {:fontname "Arial"
                         :fontsize 9
+                        :arrowhead "none"          ; No arrow heads - plain lines
                         :arrowsize 0.8}
                  :node->id :id
                  :node->descriptor (fn [node] (dissoc node :id))})))
@@ -690,6 +708,7 @@
                          :compound true}
                  :node {:fontname "Arial"
                         :fontsize 10}
+                 :edge {:arrowhead "none"}
                  :node->id :id
                  :node->descriptor (fn [node] (dissoc node :id))})))
 
@@ -733,7 +752,7 @@
                         {:directed? true
                          :graph {:rankdir rankdir :dpi 150 :splines "ortho" :concentrate true}
                          :node {:fontname "Arial" :fontsize 11 :margin 0.2 :width 2.5 :height 1.0}
-                         :edge {:fontname "Arial" :fontsize 9 :arrowsize 0.8}
+                         :edge {:fontname "Arial" :fontsize 9 :arrowhead "none" :arrowsize 0.8}
                          :node->id :id
                          :node->descriptor (fn [node] (dissoc node :id))})]
     (case format

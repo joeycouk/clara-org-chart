@@ -46,3 +46,7 @@ profiles.clj
 .clara-eav/
 .clara-rules/
 usage-examples.js
+
+
+
+*.svg
