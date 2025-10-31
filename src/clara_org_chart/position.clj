@@ -20,7 +20,7 @@
     headers))
 
 
-;; Position	Title	Current Employee	Position Reports To Position	Position Reports To Position (Dotted Line)	City	Comments/Notes	Dotted_Reports	AgencyCode	UnitCode	ClassCode	SerialNumber	Unique_Flag	Time_Base	TB_Adjustment	Region
+;; Position	Title	Current Employee	Position Reports To Position	Position Reports To Position (Dotted Line)	City	Comments/Notes	Dotted_Reports	AgencyCode	UnitCode	ClassCode	SerialNumber	Unique_Flag	Time_Base	Tenure	Region
 (defrecord Position 
            [
              row-num
@@ -38,7 +38,7 @@
             serialnumber
             unique-flag
             time-base
-            tb-adjustment
+            tenure
             region
             total-subordinates  ; New field for subordinate count
            ])
@@ -48,7 +48,7 @@
 
 (defn extract-positions [xlsx-data]
   (let [sheet (->> (:sheets xlsx-data)
-                   (filter #(= (:sheet-name %) "CNR_MOC01"))
+                   (filter #(= (:sheet-name %) "OrgChart_HQ03"))
                    first)
         cells (:cells sheet)
         ;; Get headers with their column positions
@@ -87,12 +87,27 @@
                     :serialnumber (get row-map "SERIAL")
                     ;; :unique-flag (get row-map "Unique_Flag")
                     :time-base (get row-map "Time_Base")
-                    :tb-adjustment (get row-map "TB_Adjustment")
+                    :tenure (get row-map "Tenure")
                     :region (get row-map "Region")
                     :total-subordinates nil})))))))
 
+(defn get-position-weight
+  "Calculate the weight of a position based on tb-adjustment.
+  Default is 1.0 for full-time, but can be fractional (e.g., 0.5 for half-time)."
+  [position]
+  (let [tb-adj (:tenure position)]
+    (cond
+      (nil? tb-adj) 1.0
+      (number? tb-adj) (double tb-adj)
+      (string? tb-adj) (try
+                         (Double/parseDouble tb-adj)
+                         (catch NumberFormatException _
+                           1.0))
+      :else 1.0)))
+
 (defn calculate-subordinate-counts-simple
-  "Simple recursive version with cycle detection - safer for debugging"
+  "Simple recursive version with cycle detection - safer for debugging.
+  Now accounts for tb-adjustment to weight partial positions."
   [positions]
   (let [reports-map (group-by :reports-to-position positions)
         valid-positions (filter #(and (:position %) 
@@ -102,11 +117,12 @@
     (letfn [(count-subordinates [position-id visited]
               ;; Prevent cycles by tracking visited positions
               (if (contains? visited position-id)
-                0
+                0.0
                 (let [direct-reports (get reports-map position-id [])
-                      direct-count (count direct-reports)
+                      ;; Calculate weighted direct count based on tb-adjustment
+                      direct-count (reduce + 0.0 (map get-position-weight direct-reports))
                       new-visited (conj visited position-id)
-                      indirect-count (reduce + 0 
+                      indirect-count (reduce + 0.0 
                                             (map #(count-subordinates (:position %) new-visited) 
                                                  direct-reports))]
                   (+ direct-count indirect-count))))]
@@ -192,8 +208,9 @@
                     remaining (disj to-process current)
                     direct-reports (get reports-map current [])
                     subordinate-ids (map :position direct-reports)
-                    direct-count (count direct-reports)
-                    partial-indirect (reduce + 0 (keep #(get counts %) subordinate-ids))
+                    ;; Use weighted count based on tb-adjustment
+                    direct-count (reduce + 0.0 (map get-position-weight direct-reports))
+                    partial-indirect (reduce + 0.0 (keep #(get counts %) subordinate-ids))
                     total-count (+ direct-count partial-indirect)
                     new-counts (assoc counts current total-count)
                     new-processed (conj processed current)]
@@ -203,8 +220,9 @@
               (let [new-counts (reduce (fn [counts-acc pos-id]
                                          (let [direct-reports (get reports-map pos-id [])
                                                subordinate-ids (map :position direct-reports)
-                                               direct-count (count direct-reports)
-                                               indirect-count (reduce + 0 (map #(get counts-acc % 0) subordinate-ids))
+                                               ;; Use weighted count based on tb-adjustment
+                                               direct-count (reduce + 0.0 (map get-position-weight direct-reports))
+                                               indirect-count (reduce + 0.0 (map #(get counts-acc % 0.0) subordinate-ids))
                                                total-count (+ direct-count indirect-count)]
                                            (assoc counts-acc pos-id total-count)))
                                        counts ready-positions)
@@ -262,13 +280,17 @@
         (println "\nPosition:" target)
         (println " Title:" (:title pos))
         (println " Direct reports count:" direct-count)
+        (println " Weighted direct reports count:" (reduce + 0.0 (map get-position-weight direct-reports)))
         (println " Direct report positions:")
         (doseq [report direct-reports]
-          (println "  -" (:position report) "(" (:title report) ")"))
+          (let [weight (get-position-weight report)]
+            (println "  -" (:position report) "(" (:title report) ")" 
+                     "weight:" weight 
+                     (when (:tenure report) (str "tb-adj:" (:tenure report))))))
         
-        ;; Calculate using simple algorithm for comparison
-        (let [simple-count (get (calculate-subordinate-counts-simple [pos]) target 0)
-              optimized-count (get (calculate-subordinate-counts-optimized [pos]) target 0)]
+        ;; Calculate using simple algorithm for comparison  
+        (let [simple-count (get (calculate-subordinate-counts-simple [pos]) target 0.0)
+              optimized-count (get (calculate-subordinate-counts-optimized [pos]) target 0.0)]
           (println " Simple algorithm result:" simple-count)
           (println " Optimized algorithm result:" optimized-count))))))
 
