@@ -1,5 +1,9 @@
 (ns clara-org-chart.position
-  (:require [clara.rules :refer :all])
+  (:require [clara.rules :refer :all]
+            [clara-org-chart.xlsx :as xlsx]
+            [data-types :as dt]
+              [clara-org-chart.position-rules :as pos-rules])
+    (:import (data_types Position))
   )
 
 (defn debug-headers 
@@ -18,32 +22,6 @@
     (doseq [[idx header] (map-indexed vector headers)]
       (println (format "%2d: %s" idx (pr-str header))))
     headers))
-
-
-;; Position	Title	Current Employee	Position Reports To Position	Position Reports To Position (Dotted Line)	City	Comments/Notes	Dotted_Reports	AgencyCode	UnitCode	ClassCode	SerialNumber	Unique_Flag	Time_Base	Tenure	Region
-(defrecord Position 
-           [
-             row-num
-            position
-            title
-            current-employee
-            reports-to-position
-            dotted-line-reports-to-position
-            city
-            comments-notes
-            dotted-reports
-            agencycode
-            unitcode
-            classcode
-            serialnumber
-            unique-flag
-            time-base
-            tenure
-            region
-            total-subordinates  ; New field for subordinate count
-           ])
-
-
 
 
 (defn extract-positions [xlsx-data]
@@ -70,7 +48,7 @@
                 (let [row-cell-map (into {} (map (fn [cell] [(:col cell) (:value cell)]) row-cells))
                       complete-row-data (mapv #(get row-cell-map % nil) (range 0 (inc max-col)))
                       row-map (zipmap headers complete-row-data)]
-                  (map->Position
+                  (dt/map->Position
                    {;; original sheet row index (header row is 0)
                     :row-num row-num
                     :position (get row-map "Position")
@@ -81,7 +59,7 @@
                     :city (get row-map "City")
                     :comments-notes (get row-map "Comments/Notes")
                     :dotted-reports (get row-map "Dotted_Reports")
-                    :agencycode (get row-map "AgencyCode")
+                    :agencycode (get row-map "AGENCY")
                     :unitcode (get row-map "UNIT")
                     :classcode (get row-map "CLASS")
                     :serialnumber (get row-map "SERIAL")
@@ -89,21 +67,13 @@
                     :time-base (get row-map "Time_Base")
                     :tenure (get row-map "Tenure")
                     :region (get row-map "Region")
+                    :position-weight 0
                     :total-subordinates nil})))))))
 
 (defn get-position-weight
-  "Calculate the weight of a position based on tb-adjustment.
-  Default is 1.0 for full-time, but can be fractional (e.g., 0.5 for half-time)."
+  "Get the position weight, defaulting to 1.0 if not set or invalid"
   [position]
-  (let [tb-adj (:tenure position)]
-    (cond
-      (nil? tb-adj) 1.0
-      (number? tb-adj) (double tb-adj)
-      (string? tb-adj) (try
-                         (Double/parseDouble tb-adj)
-                         (catch NumberFormatException _
-                           1.0))
-      :else 1.0)))
+  (:position-weight position 1.0))
 
 (defn calculate-subordinate-counts-simple
   "Simple recursive version with cycle detection - safer for debugging.
@@ -124,8 +94,10 @@
                       new-visited (conj visited position-id)
                       indirect-count (reduce + 0.0 
                                             (map #(count-subordinates (:position %) new-visited) 
-                                                 direct-reports))]
-                  (+ direct-count indirect-count))))]
+                                                 direct-reports))
+                      ;; If there are direct reports, include self in count, otherwise count stays 0
+                      self-count (if (> direct-count 0) 1.0 0.0)]
+                  (+ direct-count indirect-count self-count))))]
       
       (into {} 
             (map (fn [pos] 
@@ -211,7 +183,9 @@
                     ;; Use weighted count based on tb-adjustment
                     direct-count (reduce + 0.0 (map get-position-weight direct-reports))
                     partial-indirect (reduce + 0.0 (keep #(get counts %) subordinate-ids))
-                    total-count (+ direct-count partial-indirect)
+                    ;; If there are direct reports, include self in count, otherwise count stays 0
+                    self-count (if (> direct-count 0) 1.0 0.0)
+                    total-count (+ direct-count partial-indirect self-count)
                     new-counts (assoc counts current total-count)
                     new-processed (conj processed current)]
                 (recur new-processed new-counts remaining (inc iterations) max-iterations))
@@ -223,7 +197,9 @@
                                                ;; Use weighted count based on tb-adjustment
                                                direct-count (reduce + 0.0 (map get-position-weight direct-reports))
                                                indirect-count (reduce + 0.0 (map #(get counts-acc % 0.0) subordinate-ids))
-                                               total-count (+ direct-count indirect-count)]
+                                               ;; If there are direct reports, include self in count, otherwise count stays 0
+                                               self-count (if (> direct-count 0) 1.0 0.0)
+                                               total-count (+ direct-count indirect-count self-count)]
                                            (assoc counts-acc pos-id total-count)))
                                        counts ready-positions)
                     new-processed (into processed ready-positions)
@@ -379,10 +355,36 @@
                                         (empty? (str (:reports-to-position %))))
                                    valid-positions))}))
 
+(defn calculated-position->position
+  "Convert CalculatedPosition records back to Position maps for compatibility"
+  [calculated-positions]
+  (map (fn [ep]
+         (dt/map->Position
+          (select-keys ep [:row-num :position :title :current-employee :reports-to-position
+                          :dotted-line-reports-to-position :city :comments-notes :dotted-reports
+                          :agencycode :unitcode :classcode :serialnumber :unique-flag 
+                          :time-base :tenure :region :position-weight :total-subordinates])))
+       calculated-positions))
+
 (defn extract-positions-with-counts
   "Extract positions from xlsx-data and calculate subordinate counts.
   This is the recommended function to use for complete position data."
   [xlsx-data]
   (-> xlsx-data
       extract-positions
-      add-subordinate-counts))
+      pos-rules/process-positions
+      calculated-position->position
+      add-subordinate-counts
+      ))
+
+
+(comment
+  (tap>
+ (pos-rules/process-positions (extract-positions (xlsx/extract-data "resources/OrgChart_HQ03.xlsx"))))
+
+  
+  (tap> (extract-positions-with-counts (xlsx/extract-data "resources/OrgChart_HQ03.xlsx")))
+
+
+  
+  :rcf)

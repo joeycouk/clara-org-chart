@@ -12,7 +12,7 @@
    [clojure.string :as str]
    [clara-org-chart.title-hierarchy :as th]
    [clara-org-chart.data-dictionary-extractor])
-  (:import (clara_org_chart.position Position)
+  (:import (data_types Position)
            (clara_org_chart.org_chart_extractor
             OrgChartPageResult)
            (clara_org_chart.data_dictionary_extractor
@@ -726,7 +726,64 @@
 ;;   []
 ;;   [?simpleReports <- (accum/all) :from [SimpleReport]])
 
+;; CSV Export Functions
+(defn escape-csv-field
+  "Escape a field for CSV format. Wrap in quotes if it contains commas, quotes, or newlines."
+  [field]
+  (if (or (nil? field) (and (string? field) (empty? field)))
+    ""
+    (let [field-str (str field)]
+      (if (or (str/includes? field-str ",")
+              (str/includes? field-str "\"")
+              (str/includes? field-str "\n"))
+        (str "\"" (str/replace field-str "\"" "\"\"") "\"")
+        field-str))))
+
+(defn save-position-pages-report-csv
+  "Save position pages report data to a CSV file"
+  [report-data filename]
+  (let [headers ["Position Number" "Current Employee" "Total Subordinates" "Pages" "File Names"]
+        csv-content (str/join "\n"
+                              (cons
+                               (str/join "," (map escape-csv-field headers))
+                               (map (fn [row]
+                                      (str/join ","
+                                                [(escape-csv-field (:position-number row))
+                                                 (escape-csv-field (:current-employee row))
+                                                 (escape-csv-field (:total-subordinates row))
+                                                 (escape-csv-field (str/join "; " (:pages row)))
+                                                 (escape-csv-field (str/join "; " (:file-names row)))]))
+                                    report-data)))]
+    (spit filename csv-content)
+    (println (str "Saved " (count report-data) " records to " filename))))
+
+(defn generate-position-employee-pages-report
+  "Generate a report showing position numbers, current employees, and all pages they appear on.
+   Takes the result of get-all-matched-positions query and returns a sequence of maps."
+  [matched-positions]
+  (->> matched-positions
+       ;; Group by position and current-employee combination to handle unique pairs
+       (group-by (fn [pos] [(:position pos) (:current-employee pos)]))
+       ;; Transform each group into a report entry
+       (map (fn [[[position current-employee] position-records]]
+              (let [first-record (first position-records)]
+                {:position-number position
+                 :current-employee current-employee
+                 :total-subordinates (:total-subordinates first-record)
+                 :pages (sort (distinct (map :page position-records)))
+                 :file-names (distinct (map :file-name position-records))})))
+       ;; Sort by position number for consistent output
+       (sort-by :position-number)))
+
 (comment
+  
+  ;; 1. If you already have results-streaming defined from your Clara Rules session:
+(def position-pages-report
+  (generate-position-employee-pages-report
+   (:?matchedPositions (first (query results-streaming get-all-matched-positions)))))
+
+;; 2. Export to CSV:
+(save-position-pages-report-csv position-pages-report "position-pages-report.csv")
 
   ;; (def eavs (eav/xlsx->eav (xlsx/extract-data "resources/smaller Org Chart Data Analysis.xlsx") :version :v1))
   ;; Clara-EAV expects raw EAV records, not transformed vectors
@@ -798,25 +855,6 @@
                                      :page (:page mp)
                                      :file-name (:file-name mp)}})
                   (:?matchedPositions (first (query results-streaming get-all-matched-positions))))))
-
-  (defn generate-position-employee-pages-report
-    "Generate a report showing position numbers, current employees, and all pages they appear on.
-       Takes the result of get-all-matched-positions query and returns a sequence of maps."
-    [matched-positions]
-    (->> matched-positions
-         ;; Group by position and current-employee combination to handle unique pairs
-         (group-by (fn [pos] [(:position pos) (:current-employee pos)]))
-         ;; Transform each group into a report entry
-         (map (fn [[[position current-employee] position-records]]
-                (let [first-record (first position-records)]
-                  {:position-number position
-                   :current-employee current-employee
-                   :total-subordinates (:total-subordinates first-record)
-                   :pages (sort (distinct (map :page position-records)))
-                   :file-names (distinct (map :file-name position-records))})))
-         ;; Sort by position number for consistent output
-         (sort-by :position-number)))
-
 
   ;; Generate the report
   (def position-pages-report
