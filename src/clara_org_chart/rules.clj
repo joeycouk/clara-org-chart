@@ -152,6 +152,7 @@
             time-base
             tb-adjustment
             region
+            page-number
             direct-subordinates
             total-subordinates
             part-time
@@ -184,8 +185,7 @@
   [class-title]
   (when (string? class-title)
     (or (clojure.string/includes? (str/lower-case class-title) "supervisor")
-        (clojure.string/includes? (str/lower-case class-title) "chief")
-        )))
+        (clojure.string/includes? (str/lower-case class-title) "chief"))))
 
 (defn ends-with-9xx?
   "Return true if the last or second-to-last 3-digit section of a string starts with '9'.
@@ -200,11 +200,18 @@
         :else false))))
 
 
+;; this is sometimes null
 (defn extract-four-digit-section
   "Extract the first 4-digit section from a string like '542-064-1095-904-019'."
   [s]
   (let [pattern #"\b\d{4}\b"]
-    (first (re-seq pattern s))))
+    ;; add a try catch and return 9999 if it blows up
+    (try
+      (first (re-seq pattern s))
+      (catch Exception e
+        "9999"))))
+      
+
 
 (defn convert-to-matching-positions
   "Convert a set of records into a sequence of MatchingPosition instances."
@@ -271,6 +278,7 @@
               (get ?pos :time-base)
               (get ?pos :tenure)
               (get ?pos :region)
+              (get ?pos :page-number)
               (or ?subs 0)
               (get ?pos :total-subordinates)
               part-time?
@@ -293,6 +301,50 @@
               (:width pos-record)   ; Width
               (:height pos-record)  ; Height
               ))))
+
+
+;; Generate a temporary patching position for each provided page number
+(defrule pass-through-provided-page-numbers
+  "For each page number provided by the xlsx data then create a temporary position match record"
+  [?extractedPosition <- ExtractedPosition (= ?pageNumbers page-number) (= ?position position)]
+  [:test (seq ?pageNumbers)]
+  [ClassificationCode (= (extract-four-digit-section ?position) class-code) (= ?classTitle class-title)]
+  =>
+  (let [isManagerClassTitle (clojure.string/includes? (str/lower-case ?classTitle) "manager")
+        isSupervisorClassTitle (isSupervisor ?classTitle)]
+    (doseq [page-num ?pageNumbers]
+      (insert-unconditional! (->TemporaryPositionMatchingPosition
+                              (get ?extractedPosition :row-num)
+                              (get ?extractedPosition :position)
+                              ?classTitle
+                              ?classTitle
+                              (get ?extractedPosition :current-employee)
+                              (get ?extractedPosition :reports-to-position)
+                              (get ?extractedPosition :dotted-line-reports-to-position)
+                              (get ?extractedPosition :city)
+                              (get ?extractedPosition :comments-notes)
+                              (get ?extractedPosition :dotted-reports)
+                              (get ?extractedPosition :agencycode)
+                              (get ?extractedPosition :unitcode)
+                              (get ?extractedPosition :classcode)
+                              (get ?extractedPosition :serialnumber)
+                              ;;  (get ?extractedPosition :unique-flag)
+                              (get ?extractedPosition :time-base)
+                              (get ?extractedPosition :tenure)
+                              (get ?extractedPosition :region)
+                              (get ?extractedPosition :direct-subordinates)
+                              (get ?extractedPosition :total-subordinates)
+                              (get ?extractedPosition :part-time)
+                              (get ?extractedPosition :temporary)
+                              (get ?extractedPosition :file-name)
+                              page-num
+                              ""
+                              isManagerClassTitle
+                              isSupervisorClassTitle)))
+  
+  ))
+
+
 
 (defrule find-matching-temporary-position-numbers-and-xlsx-positions
   "For temporary positions only - add the Matching Position number only when they report to somebody directly within the org chart"
@@ -427,34 +479,34 @@
   ;; Not mapping in temporary positions in this function because there could be dupolicate position codes
   [:test (not= (get ?extractedPosition :temporary) true)]
   =>
-    (insert! (->MatchingPosition
-              (get ?extractedPosition :row-num)
-              (get ?extractedPosition :position)
-              (get ?extractedPosition :title)
-              "Unknown"
-              (get ?extractedPosition :current-employee)
-              (get ?extractedPosition :reports-to-position)
-              (get ?extractedPosition :dotted-line-reports-to-position)
-              (get ?extractedPosition :city)
-              (get ?extractedPosition :comments-notes)
-              (get ?extractedPosition :dotted-reports)
-              (get ?extractedPosition :agencycode)
-              (get ?extractedPosition :unitcode)
-              (get ?extractedPosition :classcode)
-              (get ?extractedPosition :serialnumber)
-              ;; (get ?extractedPosition :unique-flag)
-              (get ?extractedPosition :time-base)
-              (get ?extractedPosition :tenure)
-              (get ?extractedPosition :region)
-              (get ?extractedPosition :direct-subordinates)
-              (get ?extractedPosition :total-subordinates)
-              (get ?extractedPosition :part-time)
-              (get ?extractedPosition :temporary)
-              ?fileName
-              ?page
-              ""
-              false
-              false)))
+  (insert! (->MatchingPosition
+            (get ?extractedPosition :row-num)
+            (get ?extractedPosition :position)
+            (get ?extractedPosition :title)
+            "Unknown"
+            (get ?extractedPosition :current-employee)
+            (get ?extractedPosition :reports-to-position)
+            (get ?extractedPosition :dotted-line-reports-to-position)
+            (get ?extractedPosition :city)
+            (get ?extractedPosition :comments-notes)
+            (get ?extractedPosition :dotted-reports)
+            (get ?extractedPosition :agencycode)
+            (get ?extractedPosition :unitcode)
+            (get ?extractedPosition :classcode)
+            (get ?extractedPosition :serialnumber)
+            ;; (get ?extractedPosition :unique-flag)
+            (get ?extractedPosition :time-base)
+            (get ?extractedPosition :tenure)
+            (get ?extractedPosition :region)
+            (get ?extractedPosition :direct-subordinates)
+            (get ?extractedPosition :total-subordinates)
+            (get ?extractedPosition :part-time)
+            (get ?extractedPosition :temporary)
+            ?fileName
+            ?page
+            ""
+            false
+            false)))
 
 
 
@@ -476,6 +528,51 @@
   (insert-all! (convert-to-matching-positions ?distinctDuplicates)))
 
 
+;; Find position where they don't match to any org chart position, but their manager does. if there are multiple pages for the manager, pick the one where hte manager has subordinates
+(defrule find-missing-subordinate-position
+  "Find position where they don't match to any org chart position, but their manager does. if there are multiple pages for the manager, pick the one where hte manager has subordinates"
+  [?pos <- Position (= ?position position) (= ?reportsToPosition reports-to-position)]
+  [:test (not-empty ?reportsToPosition)]
+  [:not [OrgChartPosition (= ?position position)]]
+  [ClassificationCode (= (extract-four-digit-section ?position) class-code) (= ?classTitle class-title)]
+  [?managingOrgChartPosition <- (accum/all) :from [OrgChartPosition (= ?reportsToPosition position)]]
+  [:test (not (empty? ?managingOrgChartPosition))]
+  =>
+  ;; (tap> ?managingOrgChartPosition)
+  (let [highestPageNumFromOrgChartPositions (apply max (map #(get % :page) ?managingOrgChartPosition))
+        fileNameFromHighestPageNum (first (map #(get % :file-name) (filter #(= (get % :page) highestPageNumFromOrgChartPositions) ?managingOrgChartPosition)))
+        isManagerClassTitle (clojure.string/includes? (str/lower-case ?classTitle) "manager")
+        isSupervisorClassTitle (isSupervisor ?classTitle)]
+    (insert-unconditional! (->TempDuplicateMatchingPosition
+                            (get ?pos :row-num)
+                            (get ?pos :position)
+                            ?classTitle
+                            ?classTitle
+                            (get ?pos :current-employee)
+                            (get ?pos :reports-to-position)
+                            (get ?pos :dotted-line-reports-to-position)
+                            (get ?pos :city)
+                            (get ?pos :comments-notes)
+                            (get ?pos :dotted-reports)
+                            (get ?pos :agencycode)
+                            (get ?pos :unitcode)
+                            (get ?pos :classcode)
+                            (get ?pos :serialnumber)
+                            ;;  (get ?extractedPosition :unique-flag)
+                            (get ?pos :time-base)
+                            (get ?pos :tenure)
+                            (get ?pos :region)
+                            (get ?pos :direct-subordinates)
+                            (get ?pos :total-subordinates)
+                            (get ?pos :part-time)
+                            (get ?pos :temporary)
+                            fileNameFromHighestPageNum
+                            highestPageNumFromOrgChartPositions
+                            "Position not found on any pdf page, but manager found"
+                            isManagerClassTitle
+                            isSupervisorClassTitle))))
+
+
 
 ;; New rule to identify when multiple extract positions within the same page report to a person but that person is not included yet
 (defrule find-consistently-missing-manager
@@ -483,7 +580,9 @@
   [OrgChartPosition (= ?page page) (= ?position position) (= ?fileName file-name)]
   [ExtractedPosition (= ?position position) (= ?reportsToPosition reports-to-position)]
   [:test (not-empty ?reportsToPosition)]
+  [:test (not (nil? ?reportsToPosition))]
   [ClassificationCode (= (extract-four-digit-section ?reportsToPosition) class-code) (= ?classTitle class-title)]
+  [:test (not-empty ?classTitle)]
   [:not [OrgChartPosition (= ?page page) (= ?reportsToPosition position) (= ?fileName file-name)]]
   [?reportsToExtractedPosition <- ExtractedPosition (= ?reportsToPosition position)]
   [?numberOfPeopleReportingToThisGuy <- (accum/count) :from [MatchingPosition (= ?page page) (= ?reportsToPosition reports-to-position) (= ?fileName file-name)]]
@@ -519,9 +618,7 @@
                             ?page
                             "Supervisor Not on PDF"
                             isManagerClassTitle
-                            isSupervisorClassTitle
-                            )))
-                            )
+                            isSupervisorClassTitle))))
 
 
 
@@ -597,9 +694,7 @@
             (vector ?position)
             ?path
             ?name
-            (str "EXCEPTIONAL ALLOCATION: " ?position " is marked as a Manager or Supervisor but has no direct reports.")))
-  
-  )
+            (str "EXCEPTIONAL ALLOCATION: " ?position " is marked as a Manager or Supervisor but has no direct reports."))))
 
 
 (defrule detect-org-chart-missing-position
@@ -776,14 +871,14 @@
        (sort-by :position-number)))
 
 (comment
-  
-  ;; 1. If you already have results-streaming defined from your Clara Rules session:
-(def position-pages-report
-  (generate-position-employee-pages-report
-   (:?matchedPositions (first (query results-streaming get-all-matched-positions)))))
 
-;; 2. Export to CSV:
-(save-position-pages-report-csv position-pages-report "position-pages-report.csv")
+  ;; 1. If you already have results-streaming defined from your Clara Rules session:
+  (def position-pages-report
+    (generate-position-employee-pages-report
+     (:?matchedPositions (first (query results-streaming get-all-matched-positions)))))
+
+  ;; 2. Export to CSV:
+  (save-position-pages-report-csv position-pages-report "position-pages-report.csv")
 
   ;; (def eavs (eav/xlsx->eav (xlsx/extract-data "resources/smaller Org Chart Data Analysis.xlsx") :version :v1))
   ;; Clara-EAV expects raw EAV records, not transformed vectors
@@ -797,9 +892,9 @@
   ;; Session is now defined above, outside the comment block  ;; INCORRECT: Explicit rule vectors don't work properly in Clara-EAV
   (defsession test-session 'clara-org-chart.rules)
 
-  (pos/extract-positions (xlsx/extract-data "resources/CNR_MOC01.xlsx" :streaming true))
+  (pos/extract-positions (xlsx/extract-data "resources/OrgChart_HQ09.xlsx" :streaming true))
 
-  (tap> (pos/extract-positions-with-counts (xlsx/extract-data "resources/CNR_MOC02.xlsx" :streaming true)))
+  (tap> (pos/extract-positions-with-counts (xlsx/extract-data "resources/OrgChart_CNR02.xlsx" :streaming true)))
 
 
   ;; 2. Streaming for very large files (memory efficient)
@@ -807,7 +902,7 @@
                              (insert-all
                               (concat
                                ;;  (pos/extract-positions (xlsx/extract-data "resources/CNR_MOC01.xlsx" :streaming true))
-                               (pos/extract-positions-with-counts (xlsx/extract-data "resources/OrgChart_HQ03.xlsx" :streaming true))
+                               (pos/extract-positions-with-counts (xlsx/extract-data "resources/OrgChart_CNR02.xlsx" :streaming true))
                                (extractor/load-org-chart-pages-as-records "extracted-org-chart-positions.edn")
                                (clara-org-chart.data-dictionary-extractor/extract-classification-codes (xlsx/extract-data "resources/CAL FIRE Data Dictionary.xlsx"))))
                              (fire-rules)))
@@ -829,10 +924,11 @@
                                             (clara-org-chart.data-dictionary-extractor/extract-classification-codes (xlsx/extract-data "resources/CAL FIRE Data Dictionary.xlsx"))))
                                           (fire-rules))))
 
-  
-;; Export org chart errors to CSV
-(def errors-data (:?orgChartErrors (first (query results-streaming get-all-org-chart-errors))))
-(save-org-chart-errors-csv errors-data "org-chart-errors-report.csv")
+
+  ;; Export org chart errors to CSV
+  (def errors-data (:?orgChartErrors (first (query results-streaming get-all-org-chart-errors))))
+  (tap> errors-data)
+  (save-org-chart-errors-csv errors-data "org-chart-errors-report.csv")
 
   (tap> (extractor/load-org-chart-pages-as-records "extracted-org-chart-positions.edn"))
   (tap> (:?position-values (first (query results-streaming get-position-values))))
@@ -847,6 +943,17 @@
 
 
   (tap> (:?matchedPositions (first (query results-streaming get-all-matched-positions))))
+
+  (def matchedPostitions (:?matchedPositions (first (query results-streaming get-all-matched-positions))))
+  (def total_positions (pos/extract-positions-with-counts (xlsx/extract-data "resources/OrgChart_HQ11.xlsx" :streaming true)))
+  (tap> (count total_positions))
+
+  (tap> total_positions)
+  ;; show me the positions that arne't in matched positions
+  (tap> (filter (fn [pos]
+                  (not (some #(= (:position pos) (:position %)) matchedPostitions)))
+                total_positions))
+
   ;; take all matched positions and then make a new sequence of Firstname, position-number, and page
 
   (tap> (map into {}
@@ -860,18 +967,18 @@
   (def position-pages-report
     (generate-position-employee-pages-report
      (:?matchedPositions (first (query results-streaming get-all-matched-positions)))))
-  
+
 
 
   ;; View the report
   (tap> position-pages-report)
 
   ;; Generate updated report with total-subordinates
-(def updated-report  (generate-position-employee-pages-report
-                     (:?matchedPositions (first (query results-streaming get-all-matched-positions)))))
+  (def updated-report  (generate-position-employee-pages-report
+                        (:?matchedPositions (first (query results-streaming get-all-matched-positions)))))
 
-;; Export to CSV
-(save-position-pages-report-csv updated-report "position-employee-pages-report.csv")
+  ;; Export to CSV
+  (save-position-pages-report-csv updated-report "position-employee-pages-report.csv")
 
   ;; Or just the first few entries to see the format
   (tap> (take 5 position-pages-report))
@@ -927,7 +1034,7 @@
   (tap> (:?orgChartPositionMatches (first (query results-streaming get-specific-org-chart-page-values :?fileName "Sac HQ Org Charts 01.01.25" :?page 47))))
 
 
-  (let [queryResult (query results-streaming get-specific-org-chart-page-values :?fileName "Sac HQ Org Charts 01.01.25" :?page 72)
+  (let [queryResult (query results-streaming get-specific-org-chart-page-values :?fileName "Sac HQ Org Charts 01.01.25" :?page 2)
         positions (:?orgChartPositionMatches (first queryResult))
         errors (:?orgChartErrors (first queryResult))
         title (:description (first (:?orgChartPageResults (first queryResult))))

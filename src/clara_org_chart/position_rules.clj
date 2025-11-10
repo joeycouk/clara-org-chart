@@ -24,7 +24,8 @@
             unique-flag
             time-base
             tenure
-            region 
+            region
+            page-number 
             position-weight 
             total-subordinates
             ])
